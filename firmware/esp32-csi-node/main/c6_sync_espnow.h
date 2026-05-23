@@ -48,6 +48,15 @@ bool    c6_sync_espnow_is_leader(void);
 bool    c6_sync_espnow_is_valid(void);
 int64_t c6_sync_espnow_get_offset_us(void);
 
+/**
+ * EMA-smoothed offset (α=1/8, ~8-sample effective window at the 10 Hz
+ * beacon rate). Tracks the ≈1.4 ppm crystal drift between two C6 boards
+ * (measured in §A0.8) while suppressing the 540 µs per-beacon WiFi-MAC
+ * jitter. CSI frame timestamps should stamp from this value, not the raw
+ * offset — `c6_sync_espnow_get_epoch_us()` already does so internally.
+ */
+int64_t c6_sync_espnow_get_offset_us_smoothed(void);
+
 /* Counters for the witness harness — exposed for tests/diagnostics. */
 uint32_t c6_sync_espnow_tx_count(void);
 uint32_t c6_sync_espnow_tx_fail(void);

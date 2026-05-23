@@ -54,6 +54,21 @@ static uint32_t s_tx_fail  = 0;
 static uint32_t s_rx_count = 0;
 static uint32_t s_rx_magic_match = 0;
 
+/* ADR-110 P10 — EMA-smoothed offset (host-side trajectory in firmware).
+ *
+ * The §A0.8 four-minute soak measured 540 µs sample-stdev around a true
+ * offset that drifts at ≈1.4 ppm between two C6 crystals. An exponential
+ * moving average with α=0.125 (Q3.3 fixed-point shift = 3) yields an
+ * effective ~8-sample window, fast enough to track the drift (~7 µs/sec
+ * worst-case) while suppressing the per-beacon WiFi-MAC jitter.
+ *
+ * Two consumers: get_offset_us() (raw, unchanged — for diagnostics) and
+ * get_offset_us_smoothed() (filtered — what CSI frames should stamp).
+ * Both expose `int64_t` so call sites stay identical. */
+#define OFFSET_EMA_SHIFT 3           /* α = 1/8 = 0.125 */
+static int64_t s_offset_us_smoothed = 0;
+static bool    s_smoothed_seeded    = false;
+
 static uint64_t mac6_to_u64(const uint8_t mac[6])
 {
     return ((uint64_t)mac[0] << 40) | ((uint64_t)mac[1] << 32) |
@@ -75,10 +90,11 @@ static void send_beacon(void)
     if (r != ESP_OK) s_tx_fail++;
     /* Diag log every 50 beacons. */
     if ((s_tx_count % 50) == 1) {
-        ESP_LOGI(TAG, "tx#%lu (fail=%lu) rx#%lu (match=%lu) leader=%d offset_us=%lld",
+        ESP_LOGI(TAG, "tx#%lu (fail=%lu) rx#%lu (match=%lu) leader=%d offset_us=%lld smoothed=%lld",
                  (unsigned long)s_tx_count, (unsigned long)s_tx_fail,
                  (unsigned long)s_rx_count, (unsigned long)s_rx_magic_match,
-                 (int)s_is_leader, (long long)s_offset_us);
+                 (int)s_is_leader, (long long)s_offset_us,
+                 (long long)s_offset_us_smoothed);
     }
 }
 
@@ -115,8 +131,16 @@ static void on_recv(const uint8_t *src_mac, const uint8_t *data, int len)
 
     /* If accepted leader, compute offset from their epoch (only for non-leader). */
     if (b->leader_flag && !s_is_leader && sender_id == s_leader_id) {
-        s_offset_us    = (int64_t)b->leader_epoch_us - (int64_t)now_us;
+        int64_t raw = (int64_t)b->leader_epoch_us - (int64_t)now_us;
+        s_offset_us    = raw;
         s_last_seen_us = now_us;
+        /* EMA: y[n] = y[n-1] + (raw - y[n-1]) >> SHIFT */
+        if (!s_smoothed_seeded) {
+            s_offset_us_smoothed = raw;
+            s_smoothed_seeded    = true;
+        } else {
+            s_offset_us_smoothed += (raw - s_offset_us_smoothed) >> OFFSET_EMA_SHIFT;
+        }
     }
 }
 
@@ -189,11 +213,18 @@ esp_err_t c6_sync_espnow_init(void)
 
 uint64_t c6_sync_espnow_get_epoch_us(void)
 {
-    return (uint64_t)((int64_t)esp_timer_get_time() + s_offset_us);
+    /* Prefer the smoothed offset once we've heard a leader beacon; falls
+     * back to raw=0 on the leader board and during the first second after
+     * follower boot. The smoothed value is what CSI frames should stamp
+     * for cross-board multistatic alignment (§A0.8 measured 540 µs raw
+     * stdev → expected <100 µs smoothed with α=1/8 over ~8 samples). */
+    int64_t off = s_smoothed_seeded ? s_offset_us_smoothed : s_offset_us;
+    return (uint64_t)((int64_t)esp_timer_get_time() + off);
 }
 
 bool c6_sync_espnow_is_leader(void) { return s_is_leader; }
 int64_t c6_sync_espnow_get_offset_us(void) { return s_offset_us; }
+int64_t c6_sync_espnow_get_offset_us_smoothed(void) { return s_offset_us_smoothed; }
 
 bool c6_sync_espnow_is_valid(void)
 {
