@@ -473,6 +473,71 @@ Base URL: `http://localhost:3000` (Docker) or `http://localhost:8080` (binary de
 | `POST` | `/api/v1/adaptive/train` | Train adaptive classifier from recordings | `{"success":true,"accuracy":0.85}` |
 | `GET` | `/api/v1/adaptive/status` | Adaptive model status and accuracy | `{"loaded":true,"accuracy":0.85}` |
 | `POST` | `/api/v1/adaptive/unload` | Unload adaptive model | `{"success":true}` |
+| `GET` | `/api/v1/mesh` | ADR-110 fleet-wide mesh sync map ([iter 29](adr/ADR-110-esp32-c6-firmware-extension.md)) | `{"nodes":{"9":{...},"12":{...}},"total":2}` |
+| `GET` | `/api/v1/nodes/:id/sync` | Single-node mesh sync snapshot (or 404) | `{"offset_us":1163565,"is_leader":false,...}` |
+
+### Example: Get fleet mesh state (ADR-110)
+
+```bash
+curl -s http://localhost:3000/api/v1/mesh | python -m json.tool
+```
+
+```json
+{
+    "nodes": {
+        "9": {
+            "offset_us":       1163565,
+            "is_leader":       false,
+            "is_valid":        true,
+            "smoothed":        true,
+            "sequence":        20,
+            "csi_fps_ema":     10.0,
+            "csi_fps_samples": 47
+        },
+        "12": {
+            "offset_us":       -7,
+            "is_leader":       true,
+            "is_valid":        true,
+            "smoothed":        false,
+            "sequence":        20,
+            "csi_fps_ema":     10.0,
+            "csi_fps_samples": 51
+        }
+    },
+    "total": 2
+}
+```
+
+Empty `{"nodes": {}, "total": 0}` means no mesh peers reachable.
+Nodes that haven't emitted a sync packet yet are omitted from the map.
+
+### Example: Get one node's sync state
+
+```bash
+curl -s http://localhost:3000/api/v1/nodes/9/sync | python -m json.tool
+```
+
+200 → same `NodeSyncSnapshot` shape as inside `/api/v1/mesh` or the
+WebSocket `sync` field. Field meanings are documented under
+[Per-node mesh sync (ADR-110)](#per-node-mesh-sync-adr-110).
+
+404 (unknown node):
+```json
+{"error": "unknown_node", "node_id": 99}
+```
+
+404 (node exists but hasn't synced yet):
+```json
+{
+    "error":   "no_sync",
+    "node_id": 9,
+    "hint":    "node hasn't emitted a sync packet yet (no mesh peer or not v0.6.9+)"
+}
+```
+
+Useful for Home Assistant REST sensors, Prometheus exporters,
+automation rule probes, and curl debugging — anywhere you want
+one-shot mesh state without holding a WebSocket connection.
 
 ### Example: Get Vital Signs
 
