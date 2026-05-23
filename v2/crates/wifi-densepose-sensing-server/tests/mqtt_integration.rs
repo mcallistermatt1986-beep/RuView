@@ -58,13 +58,16 @@ fn should_run() -> Option<u16> {
     Some(port)
 }
 
-fn make_cfg(port: u16, privacy_mode: bool) -> std::sync::Arc<MqttConfig> {
+fn make_cfg(port: u16, privacy_mode: bool, label: &str) -> std::sync::Arc<MqttConfig> {
     std::sync::Arc::new(MqttConfig {
         host: "127.0.0.1".into(),
         port,
         username: None,
         password: None,
-        client_id: format!("ruview-int-test-{}", std::process::id()),
+        // Per-test client_id so cargo test --test-threads=1 doesn't make
+        // mosquitto kick the previous session when the next test connects
+        // with the same client_id (default MQTT session-takeover behaviour).
+        client_id: format!("ruview-int-test-{}-{}", std::process::id(), label),
         discovery_prefix: "homeassistant".into(),
         tls: TlsConfig::Off,
         refresh_secs: 60,
@@ -139,7 +142,7 @@ async fn discovery_topics_appear_on_broker() {
         subscribe_client(port, &["homeassistant/#"]).await;
 
     // Spawn the publisher.
-    let cfg = make_cfg(port, false);
+    let cfg = make_cfg(port, false, "discovery");
     let builder = make_builder("inttest1");
     let (_tx, rx) = broadcast::channel::<VitalsSnapshot>(32);
     let _handle = spawn(cfg, builder, rx);
@@ -189,7 +192,7 @@ async fn privacy_mode_suppresses_biometric_discovery() {
     let (sub, mut sub_loop) =
         subscribe_client(port, &["homeassistant/#"]).await;
 
-    let cfg = make_cfg(port, /* privacy_mode = */ true);
+    let cfg = make_cfg(port, /* privacy_mode = */ true, "privacy");
     let builder = make_builder("inttest2");
     let (_tx, rx) = broadcast::channel::<VitalsSnapshot>(32);
     let _handle = spawn(cfg, builder, rx);
@@ -237,7 +240,7 @@ async fn state_messages_published_on_snapshot_broadcast() {
     )
     .await;
 
-    let cfg = make_cfg(port, false);
+    let cfg = make_cfg(port, false, "state");
     let builder = make_builder("inttest3");
     let (tx, rx) = broadcast::channel::<VitalsSnapshot>(32);
     let _handle = spawn(cfg, builder, rx);
