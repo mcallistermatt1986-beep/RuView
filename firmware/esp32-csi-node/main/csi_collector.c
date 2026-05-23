@@ -324,7 +324,18 @@ static void wifi_csi_callback(void *ctx, wifi_csi_info_t *info)
             memcpy(&sync[24], &s_sequence, 4);    /* high-water seq for pairing */
             uint32_t zero32 = 0;
             memcpy(&sync[28], &zero32, 4);        /* reserved (room for leader_id low32) */
-            (void)stream_sender_send(sync, sizeof(sync));
+            int sr = stream_sender_send(sync, sizeof(sync));
+            static uint32_t s_sync_count = 0;
+            s_sync_count++;
+            if (s_sync_count <= 3 || (s_sync_count % 60) == 0) {
+                ESP_LOGI(TAG, "sync-pkt #%lu (sr=%d) node=%u flags=0x%02x "
+                              "local_us=%llu epoch_us=%llu seq=%lu",
+                         (unsigned long)s_sync_count, sr,
+                         (unsigned)s_node_id, (unsigned)flags,
+                         (unsigned long long)local_us,
+                         (unsigned long long)epoch_us,
+                         (unsigned long)s_sequence);
+            }
         }
     }
 }
