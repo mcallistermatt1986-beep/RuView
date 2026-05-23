@@ -143,13 +143,28 @@ class ESP32BinaryParser:
         12      4     Sequence number (LE u32)
         16      1     RSSI (i8)
         17      1     Noise floor (i8)
-        18      2     Reserved
+        18      1     PPDU type (ADR-110): 0=HT/legacy, 1=HE-SU, 2=HE-MU,
+                       3=HE-TB, 0xFF=unknown. Pre-ADR-110 firmware sends 0.
+        19      1     Flags (ADR-110): bit 0 = bw40, bit 2 = STBC,
+                       bit 3 = LDPC, bit 4 = 802.15.4 sync valid.
         20      N*2   I/Q pairs (n_antennas * n_subcarriers * 2 bytes, signed i8)
     """
 
     MAGIC = 0xC5110001
     HEADER_SIZE = 20
-    HEADER_FMT = '<IBBHIIBB2x'  # magic, node_id, n_ant, n_sc, freq, seq, rssi, noise
+    # ADR-110: previously '<IBBHIIBB2x' (last 2 bytes skipped as reserved).
+    # Now read those 2 bytes as PPDU type + flags. Pre-ADR-110 firmware
+    # sends zeros, which decode as 'HT/legacy' + 'no flags' — fully
+    # backwards compatible.
+    HEADER_FMT = '<IBBHIIBBBB'  # +2 bytes: ppdu_type, flags
+
+    # ADR-110 PPDU type byte values
+    PPDU_HT_LEGACY = 0
+    PPDU_HE_SU = 1
+    PPDU_HE_MU = 2
+    PPDU_HE_TB = 3
+    PPDU_UNKNOWN = 0xFF
+    _PPDU_NAMES = {0: 'ht_legacy', 1: 'he_su', 2: 'he_mu', 3: 'he_tb', 0xFF: 'unknown'}
 
     def parse(self, raw_data: bytes) -> CSIData:
         """Parse an ADR-018 binary frame into CSIData.
@@ -168,8 +183,8 @@ class ESP32BinaryParser:
                 f"Frame too short: need {self.HEADER_SIZE} bytes, got {len(raw_data)}"
             )
 
-        magic, node_id, n_antennas, n_subcarriers, freq_mhz, sequence, rssi_u8, noise_u8 = \
-            struct.unpack_from(self.HEADER_FMT, raw_data, 0)
+        magic, node_id, n_antennas, n_subcarriers, freq_mhz, sequence, rssi_u8, noise_u8, \
+            ppdu_byte, flags_byte = struct.unpack_from(self.HEADER_FMT, raw_data, 0)
 
         if magic != self.MAGIC:
             raise CSIParseError(
@@ -226,6 +241,17 @@ class ESP32BinaryParser:
                 'rssi_dbm': rssi,
                 'noise_floor_dbm': noise_floor,
                 'channel_freq_mhz': freq_mhz,
+                # ADR-110 extension — zeros from pre-ADR-110 firmware land here as
+                # 'ht_legacy' + all-flags-false. New consumers can branch on
+                # ppdu_type / he_capable for HE-LTF-aware DSP.
+                'ppdu_type': self._PPDU_NAMES.get(ppdu_byte, 'unknown'),
+                'ppdu_type_raw': ppdu_byte,
+                'he_capable': ppdu_byte in (1, 2, 3),
+                'bw40': bool(flags_byte & 0x01),
+                'stbc': bool(flags_byte & 0x04),
+                'ldpc': bool(flags_byte & 0x08),
+                'ieee802154_sync_valid': bool(flags_byte & 0x10),
+                'adr018_flags_raw': flags_byte,
             }
         )
 

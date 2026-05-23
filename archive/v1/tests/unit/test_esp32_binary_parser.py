@@ -23,7 +23,10 @@ from hardware.csi_extractor import (
 
 # ADR-018 constants
 MAGIC = 0xC5110001
-HEADER_FMT = '<IBBHIIBB2x'
+# ADR-110: bytes 18-19 are now PPDU type + flags (used to be `2x` reserved).
+# Pre-ADR-110 firmware sends zeros for both, which round-trip as
+# ('ht_legacy', flags=all-false) — fully backwards compatible.
+HEADER_FMT = '<IBBHIIBBBB'
 HEADER_SIZE = 20
 
 
@@ -36,6 +39,8 @@ def build_binary_frame(
     rssi: int = -50,
     noise_floor: int = -90,
     iq_pairs: list = None,
+    ppdu_byte: int = 0,   # ADR-110: default 0 = HT/legacy (pre-ADR-110 behavior)
+    flags_byte: int = 0,  # ADR-110: default 0 = no flags set
 ) -> bytes:
     """Build an ADR-018 binary frame for testing."""
     if iq_pairs is None:
@@ -54,6 +59,8 @@ def build_binary_frame(
         sequence,
         rssi_u8,
         noise_u8,
+        ppdu_byte,
+        flags_byte,
     )
 
     iq_data = b''
@@ -61,6 +68,52 @@ def build_binary_frame(
         iq_data += struct.pack('<bb', i_val, q_val)
 
     return header + iq_data
+
+
+class TestAdr110ByteEncoding:
+    """ADR-110: byte 18 = PPDU type, byte 19 = flags."""
+
+    def setup_method(self):
+        self.parser = ESP32BinaryParser()
+
+    def test_pre_adr110_zeros_decode_as_ht_legacy(self):
+        """Pre-ADR-110 firmware sends zeros → must surface as HT/legacy + no flags."""
+        frame = build_binary_frame()  # ppdu_byte=0, flags_byte=0 default
+        csi = self.parser.parse(frame)
+        assert csi.metadata['ppdu_type'] == 'ht_legacy'
+        assert csi.metadata['ppdu_type_raw'] == 0
+        assert csi.metadata['he_capable'] is False
+        assert csi.metadata['bw40'] is False
+        assert csi.metadata['stbc'] is False
+        assert csi.metadata['ldpc'] is False
+        assert csi.metadata['ieee802154_sync_valid'] is False
+
+    def test_he_su_decodes(self):
+        frame = build_binary_frame(ppdu_byte=1)
+        csi = self.parser.parse(frame)
+        assert csi.metadata['ppdu_type'] == 'he_su'
+        assert csi.metadata['he_capable'] is True
+
+    def test_he_mu_and_he_tb_decode(self):
+        for byte, expected in [(2, 'he_mu'), (3, 'he_tb')]:
+            csi = self.parser.parse(build_binary_frame(ppdu_byte=byte))
+            assert csi.metadata['ppdu_type'] == expected
+            assert csi.metadata['he_capable'] is True
+
+    def test_unknown_ppdu_byte(self):
+        csi = self.parser.parse(build_binary_frame(ppdu_byte=0xFF))
+        assert csi.metadata['ppdu_type'] == 'unknown'
+        assert csi.metadata['ppdu_type_raw'] == 0xFF
+        assert csi.metadata['he_capable'] is False
+
+    def test_all_flags_set_round_trip(self):
+        # bw40 (0x01) + STBC (0x04) + LDPC (0x08) + 15.4-sync (0x10) = 0x1D
+        csi = self.parser.parse(build_binary_frame(ppdu_byte=1, flags_byte=0x1D))
+        assert csi.metadata['bw40'] is True
+        assert csi.metadata['stbc'] is True
+        assert csi.metadata['ldpc'] is True
+        assert csi.metadata['ieee802154_sync_valid'] is True
+        assert csi.metadata['adr018_flags_raw'] == 0x1D
 
 
 class TestESP32BinaryParser:
