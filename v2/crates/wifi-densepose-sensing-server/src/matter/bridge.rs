@@ -3,15 +3,17 @@
 //! Given a list of RuView nodes and the `EntityKind`s enabled for
 //! each, produce the Matter endpoint tree the SDK will materialise:
 //!
-//!     Endpoint 0 (root: BridgedDevicesAggregator)
-//!       Endpoint 1 (BridgedNode for ruview-node-0)
-//!         Endpoint 2 (OccupancySensor for presence + PersonCount attr)
-//!         Endpoint 3 (OccupancySensor for zone_kitchen)
-//!         Endpoint 4 (OccupancySensor for SomeoneSleeping)
-//!         Endpoint 5 (GenericSwitch for FallDetected)
-//!         …
-//!       Endpoint N (BridgedNode for ruview-node-1)
-//!         …
+//! ```text
+//! Endpoint 0 (root: BridgedDevicesAggregator)
+//!   Endpoint 1 (BridgedNode for ruview-node-0)
+//!     Endpoint 2 (OccupancySensor for presence + PersonCount attr)
+//!     Endpoint 3 (OccupancySensor for zone_kitchen)
+//!     Endpoint 4 (OccupancySensor for SomeoneSleeping)
+//!     Endpoint 5 (GenericSwitch for FallDetected)
+//!     …
+//!   Endpoint N (BridgedNode for ruview-node-1)
+//!     …
+//! ```
 //!
 //! Tree assembly is pure logic — no SDK calls. The SDK layer reads
 //! this struct and registers the matching clusters. Splitting this
