@@ -94,9 +94,13 @@ python firmware/esp32-csi-node/provision.py --port COM9 \
 cd firmware/esp32-csi-node
 idf.py set-target esp32c6 && idf.py build
 idf.py -p COM6 flash
-# C6 boot extras (vs S3):  HE-LTF subcarrier tagging in ADR-018 bytes 18-19,
+# C6 boot extras (vs S3): HE-LTF subcarrier tagging in ADR-018 bytes 18-19,
 #   802.15.4 mesh time-sync on channel 15, TWT setup when the AP supports it,
 #   opt-in LP-core wake-on-motion for ~5 µA battery seed nodes.
+# v0.6.7 adds: real LP-core RISC-V motion-gate program (debounce + motion
+#   counter) and a Wi-Fi 6 soft-AP with TWT Responder so two C6 boards can
+#   benchmark real iTWT without buying an 11ax router. Both default off,
+#   flip CONFIG_C6_{LP_CORE,SOFTAP_HE}_ENABLE to turn them on.
 
 # Option 3: Full system with Cognitum Seed ($140)
 # ESP32 streams CSI → bridge forwards to Seed for persistent storage + kNN + witness chain
@@ -114,7 +118,7 @@ node scripts/mincut-person-counter.js --port 5006  # Correct person counting
 > |--------|----------|------|----------|-------------|
 > | **ESP32 + Cognitum Seed** (recommended) | ESP32-S3 + [Cognitum Seed](https://cognitum.one) | ~$140 | Yes | Presence, motion, breathing, heart rate, fall detection, multi-person counting, 17-keypoint pose (signed Cog binary), 105-cog catalog, persistent vector store, kNN search, witness chain, MCP proxy |
 > | **ESP32 Mesh** | 3-6× ESP32-S3 + WiFi router | ~$54 | Yes | Same capabilities as above without the persistent-memory features |
-> | **ESP32-C6 research node** ([ADR-110](docs/adr/ADR-110-esp32-c6-firmware-extension.md), [witness](docs/WITNESS-LOG-110.md), [reviewer guide](docs/ADR-110-REVIEW-GUIDE.md)) | ESP32-C6-DevKit ($6–10) | ~$10 | Yes (Wi-Fi 6 capable) | Same CSI pipeline as S3 with the dual-target firmware. **Wire format ready** for HE-LTF PPDU tagging in ADR-018 bytes 18-19 (firmware encoder + Rust + Python decoders verified end-to-end in 17 unit tests), ESP-NOW cross-node sync (4102 tx 0 fail cumulative across 120 s + 300 s soaks), and TWT graceful-NACK fallback (live exercised). **Hardware-gated**: HE-LTF live subcarrier capture needs an 11ax AP; ~5 µA LP-core hibernation needs an INA meter to measure; 802.15.4 RX is broken in IDF v5.4 (workaround: ESP-NOW transport for cross-node sync). See witness log for the empirical / claimed split. |
+> | **ESP32-C6 research node** ([ADR-110](docs/adr/ADR-110-esp32-c6-firmware-extension.md), [witness](docs/WITNESS-LOG-110.md), [reviewer guide](docs/ADR-110-REVIEW-GUIDE.md), [firmware v0.6.7](https://github.com/ruvnet/RuView/releases/tag/v0.6.7-esp32)) | ESP32-C6-DevKit ($6–10) | ~$10 | Yes (Wi-Fi 6 capable) | Same CSI pipeline as S3 with the dual-target firmware. **Wire format ready** for HE-LTF PPDU tagging in ADR-018 bytes 18-19 (firmware encoder + Rust + Python decoders verified end-to-end in 17 unit tests), ESP-NOW cross-node sync (4102 tx 0 fail cumulative across 120 s + 300 s soaks), and TWT graceful-NACK fallback (live exercised). **v0.6.7 adds** a real LP-core motion-gate RISC-V program (B4 code path) and a Wi-Fi 6 soft-AP with TWT Responder for two-board iTWT benches (B1/B2 unblock, no 11ax router required). **Hardware-gated for measurement**: HE-LTF live subcarrier capture needs the soft-AP bench or an 11ax AP; ~5 µA LP-core hibernation needs an INA meter to capture; 802.15.4 raw RX is broken in IDF v5.4 (workaround: ESP-NOW transport, shipped). See witness log for the empirical / claimed split. |
 > | **Research NIC** | Intel 5300 / Atheros AR9580 | ~$50-100 | Yes | Full CSI with 3x3 MIMO |
 > | **Any WiFi** | Windows, macOS, or Linux laptop | $0 | No | RSSI-only: coarse presence and motion (see [tutorial #36](https://github.com/ruvnet/RuView/issues/36)) |
 >

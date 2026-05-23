@@ -1118,7 +1118,8 @@ Pre-built binaries are available at [Releases](https://github.com/ruvnet/RuView/
 
 | Release | What It Includes | Tag |
 |---------|-----------------|-----|
-| [v0.5.0](https://github.com/ruvnet/RuView/releases/tag/v0.5.0-esp32) | **Stable (recommended)** — mmWave sensor fusion (MR60BHA2/LD2410 auto-detect), 48-byte fused vitals, all v0.4.3.1 fixes | `v0.5.0-esp32` |
+| [v0.6.7](https://github.com/ruvnet/RuView/releases/tag/v0.6.7-esp32) | **Latest** — real LP-core motion-gate RISC-V program (B4 code path complete) + Wi-Fi 6 soft-AP with TWT Responder for two-board iTWT benches (B1/B2 unblock), no router required. Both default off — no behavior change for v0.6.6 fleets ([ADR-110 P9](adr/ADR-110-esp32-c6-firmware-extension.md)) | `v0.6.7-esp32` |
+| [v0.5.0](https://github.com/ruvnet/RuView/releases/tag/v0.5.0-esp32) | **Stable (S3 mesh, recommended)** — mmWave sensor fusion (MR60BHA2/LD2410 auto-detect), 48-byte fused vitals, all v0.4.3.1 fixes | `v0.5.0-esp32` |
 | [v0.4.3.1](https://github.com/ruvnet/RuView/releases/tag/v0.4.3.1-esp32) | Fall detection fix ([#263](https://github.com/ruvnet/RuView/issues/263)), 4MB flash ([#265](https://github.com/ruvnet/RuView/issues/265)), watchdog fix ([#266](https://github.com/ruvnet/RuView/issues/266)) | `v0.4.3.1-esp32` |
 | [v0.4.1](https://github.com/ruvnet/RuView/releases/tag/v0.4.1-esp32) | CSI build fix, compile guard, AMOLED display, edge intelligence ([ADR-057](../docs/adr/ADR-057-firmware-csi-build-guard.md)) | `v0.4.1-esp32` |
 | [v0.3.0-alpha](https://github.com/ruvnet/RuView/releases/tag/v0.3.0-alpha-esp32) | Alpha — adds on-device edge intelligence (ADR-039) | `v0.3.0-alpha-esp32` |
@@ -1189,7 +1190,7 @@ python provision.py --port COM6 --ssid "YourWiFi" --password "secret" --target-i
 **Verifying the C6 modules came up** — `idf.py -p COM6 monitor` should show:
 
 ```
-I (353) main: ESP32-C6 CSI Node (ADR-018 / ADR-110) — v0.6.6 — Node ID: 1
+I (353) main: ESP32-C6 CSI Node (ADR-018 / ADR-110) — v0.6.7 — Node ID: 1
 I (413) c6_ts: init done: channel=15 EUI=<your-EUI64> leader=yes(candidate)
 I (463) wifi: mac_version:HAL_MAC_ESP32AX_761      ← 802.11ax MAC firmware loaded
 ```
@@ -1200,17 +1201,57 @@ The `c6_ts: init done` line confirms the 802.15.4 stack is up; if TWT succeeds y
 
 Flash two or more C6 boards, leave them on the same 802.15.4 channel (default 15). One will elect itself leader (lowest EUI-64) and broadcast `TS_BEACON` frames every 100 ms; the others compute and apply offsets. Each CSI frame from a follower carries a `c6_timesync_get_epoch_us()` wall-clock estimate aligned to within ±100 µs of the leader's monotonic time. Target use case: ADR-029/030 multistatic fusion without burning WiFi airtime on coordination.
 
-**Battery seed-node mode:**
+**Battery seed-node mode (v0.6.7 — real LP-core program):**
 
 ```bash
 # Enable LP-core hibernation in menuconfig:
 #   ESP32-C6 capabilities (ADR-110) → Enable LP-core wake-on-motion hibernation
 #   → LP-core wake GPIO (default 4 — connect a PIR or accelerometer INT line here)
+#   → LP-core poll period (default 10 ms)
+#   → LP-core debounce sample count (default 3 consecutive matches)
 idf.py menuconfig
 idf.py build flash
 ```
 
-When enabled, the C6 boots, takes one CSI burst, then enters deep sleep with the LP-core armed. Target standby current ~5 µA.
+When enabled, the C6 LP RISC-V coprocessor runs a real polling program
+(`firmware/esp32-csi-node/main/lp_core/main.c`) that polls the wake GPIO at
+the configured cadence, debounces N consecutive matching reads, and wakes the
+HP core via `ulp_lp_core_wakeup_main_processor()`. `esp_sleep_get_wakeup_cause()`
+returns `ESP_SLEEP_WAKEUP_ULP`, and `c6_lp_core_motion_count()` /
+`c6_lp_core_poll_count()` expose the LP-side counters for the witness harness.
+Target standby current ~5 µA (datasheet; pending INA measurement).
+
+**Two-board iTWT bench (v0.6.7 — soft-AP HE/TWT, no router required):**
+
+Pair two C6 boards — one acts as the iTWT-capable AP, the other as the STA
+that negotiates and benchmarks the TWT agreement.
+
+```bash
+# Board #1 (AP role): append to sdkconfig.defaults.esp32c6:
+CONFIG_C6_SOFTAP_HE_ENABLE=y
+CONFIG_C6_SOFTAP_HE_SSID="ruview-c6-twt"
+CONFIG_C6_SOFTAP_HE_PSK="ruviewtwt"
+CONFIG_C6_SOFTAP_HE_CHANNEL=6
+
+idf.py set-target esp32c6 && idf.py build && idf.py -p COM6 flash
+```
+
+Board #1 boots in `WIFI_MODE_APSTA`, advertising HE capabilities and TWT
+Responder=1 on channel 6. Board #2 provisions to associate with that SSID:
+
+```bash
+python firmware/esp32-csi-node/provision.py --port COM9 \
+  --ssid "ruview-c6-twt" --password "ruviewtwt" --target-ip 192.168.1.20
+```
+
+Board #2 runs the existing `c6_twt_setup_default()` on connect and now
+negotiates a real iTWT agreement against the cooperative AP — the
+`iTWT setup queued: wake_interval=10000 µs` log line should be followed by an
+`iTWT setup event received from AP` instead of the `INVALID_ARG` graceful
+fallback that fired against the bench's 11n-only `ruv.net` AP.
+
+NVS overrides for AP role (namespace `ruview`): `softap_ssid`, `softap_psk`,
+`softap_chan` — provision once and the values survive firmware updates.
 
 **What's NOT on the C6 build** (vs S3 production): no AMOLED display (ADR-045 needs 8 MB + LCD touch driver), no WASM3 (ADR-040 needs PSRAM), no Seeed mmWave fusion (separate board). The C6 is a research/seed target, not a drop-in replacement for the S3 production node.
 
