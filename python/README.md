@@ -1,97 +1,143 @@
-# `wifi-densepose` v2.x — PyO3 bindings for the Rust core
+# wifi-densepose
 
-This directory contains the source for the `wifi-densepose` PyPI wheel
-(v2.0+). It's a PyO3 + maturin build that wraps the Rust crates in
-[`v2/crates/`](../v2/crates/) and replaces the legacy pure-Python
-`wifi-densepose==1.1.0` (released 2025-06-07).
+[![PyPI version](https://img.shields.io/pypi/v/wifi-densepose.svg)](https://pypi.org/project/wifi-densepose/)
+[![Python](https://img.shields.io/pypi/pyversions/wifi-densepose.svg)](https://pypi.org/project/wifi-densepose/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-See [ADR-117](../docs/adr/ADR-117-pip-wifi-densepose-modernization.md)
-for the full modernization plan.
+**Detect human presence, count people, read breathing and heart rate, and
+estimate skeletal pose — using only the WiFi signal already in your home.**
 
-## Build locally
+No cameras. No wearables. Works through walls and in the dark.
+
+`wifi-densepose` is the Python binding for the [RuView](https://github.com/ruvnet/RuView)
+sensing stack: a Rust core that turns the Channel State Information (CSI)
+emitted by ordinary WiFi chips into ambient-intelligence signals. The wheel
+ships compiled DSP for fast offline analysis, plus an opt-in Python client
+for talking to a live RuView sensing-server over WebSocket or MQTT.
+
+## Features
+
+- **17-keypoint pose** — full-body skeletal estimate from WiFi CSI, no camera
+- **Vital signs** — respiratory rate (6–30 BPM) and heart rate (40–120 BPM)
+  with a confidence score and clinical-grade / degraded / unreliable status
+- **Presence, person count, fall detection, motion** — fused outputs from
+  the same CSI stream
+- **10 semantic primitives** (HA-MIND) — someone-sleeping, possible-distress,
+  room-active, bathroom-occupied, fall-risk-elevated, bed-exit, … — ready
+  to wire into Home Assistant or Apple Home automations
+- **Beamforming Feedback (BFLD) support** — 802.11ac/ax/be compressed feedback
+  matrices on top of the receiver-side CSI path
+- **GIL-releasing DSP** — extract loops run with the GIL released, so a
+  tokio-backed web server can call into the pipeline without stalling its
+  event loop
+- **Tiny wheel** — ~240 KB compiled (one binary per OS/arch covers Python
+  3.10+ via the stable ABI)
+
+## Install
 
 ```bash
-# Install maturin + dev deps
-pip install maturin pytest
-
-# Develop-install — builds the Rust extension in-place
-cd python
-maturin develop
-
-# Run the smoke tests
-pytest tests/
+pip install wifi-densepose                 # core DSP only
+pip install "wifi-densepose[client]"       # + WebSocket/MQTT clients
 ```
 
-The `maturin develop` command produces a debug-build wheel installed
-into your current Python environment. For release builds:
+Wheels are published for Linux (x86_64, aarch64), macOS (x86_64, arm64), and
+Windows (amd64).
 
-```bash
-maturin build --release --strip
+## Usage
+
+### Extract breathing rate from a CSI stream
+
+```python
+from wifi_densepose import BreathingExtractor
+
+br = BreathingExtractor.esp32_default()     # 56 subcarriers @ 100 Hz, 30s window
+
+for residuals, weights in your_csi_source:  # one frame at a time
+    est = br.extract(residuals=residuals, weights=weights)
+    if est is not None:
+        print(f"{est.value_bpm:.1f} BPM  (confidence={est.confidence:.2f})")
 ```
 
-The wheel lands under `python/target/wheels/`.
+Heart rate is the same shape — `HeartRateExtractor.esp32_default()` with a
+0.8–2.0 Hz band-pass and a 15-second window.
 
-## Layout
+### Subscribe to a live sensing-server
 
+```python
+import asyncio
+from wifi_densepose.client import SensingClient, EdgeVitalsMessage
+
+async def main():
+    async with SensingClient("ws://your-ruview-node:8765/ws/sensing") as c:
+        async for msg in c.stream():
+            if isinstance(msg, EdgeVitalsMessage):
+                print(msg.presence, msg.breathing_rate_bpm, msg.heartrate_bpm)
+
+asyncio.run(main())
 ```
-python/
-├── Cargo.toml                    # PyO3 + abi3-py310 + Rust deps
-├── pyproject.toml                # maturin backend + Python metadata
-├── README.md                     # this file
-├── src/
-│   └── lib.rs                    # #[pymodule] — Rust binding glue
-├── wifi_densepose/               # pure-Python facade (the user-facing API)
-│   ├── __init__.py               # re-exports compiled module symbols
-│   └── py.typed                  # PEP 561 typed-package marker
-└── tests/
-    └── test_smoke.py             # P1 acceptance tests
+
+### React to Home Assistant semantic primitives
+
+```python
+from wifi_densepose.client import (
+    RuViewMqttClient, SemanticPrimitive, SemanticPrimitiveListener,
+)
+
+listener = SemanticPrimitiveListener()
+listener.on(SemanticPrimitive.BedExit, lambda e: print("bed exit:", e.node_id))
+listener.on(SemanticPrimitive.PossibleDistress, lambda e: alert(e))
+
+client = RuViewMqttClient(broker_host="homeassistant.local")
+client.on_message(
+    "homeassistant/+/wifi_densepose_+/+/state",
+    listener.handle_mqtt_message,
+)
+client.start()
+client.wait_connected()
 ```
 
-## Phase status (per ADR-117 §6)
+### Decode 802.11ax beamforming feedback
 
-- ✅ **P1 — Scaffold**: module loads, version constant exposed,
-  6 smoke tests pass via `maturin develop`.
-- ✅ **P2 — Core type bindings**: `Keypoint`, `KeypointType`,
-  `BoundingBox`, `PersonPose`, `PoseEstimate`. 51 additional tests.
-- ✅ **P3 — Vitals + signal DSP**: `VitalStatus`, `VitalEstimate`,
-  `VitalReading`, `BreathingExtractor`, `HeartRateExtractor` with
-  `py.allow_threads` GIL release on hot loops (Q5 tokio audit on
-  2026-05-24 confirmed core/vitals/signal are pure-sync). 17 tests.
-- ✅ **P3.5 — BFLD bindings (stub Rust)**: `BfldKind`, `BfldFrame`,
-  `BfldReport` — forward-compatible Python surface for 802.11ac/ax/be
-  Beamforming Feedback Loop Data. numpy Complex64 bridge. 19 tests.
-  Real Rust ingestion lands post-v2.0 in a `wifi-densepose-bfld`
-  crate (see ADR-117 §11.11/12); the Python API does not change.
-- ✅ **P4 — WS/MQTT client**: pure-Python `wifi_densepose.client` extra
-  (no Rust). `SensingClient` (asyncio websockets), `RuViewMqttClient`
-  (paho-mqtt v2 with VERSION2 callbacks), `HABlueprintHelper` (HA
-  discovery payload parser), `SemanticPrimitiveListener` (typed router
-  for the 10 HA-MIND primitives from ADR-115 §3.12). 63 tests including
-  end-to-end against an in-process `websockets.serve` fixture.
-- ⏳ **P5 — cibuildwheel + PyPI publish (workflow shipped)**: GH Actions
-  workflow `.github/workflows/pip-release.yml` ships the 5-wheel
-  matrix (manylinux x86_64+aarch64, macosx x86_64+arm64, win amd64)
-  plus sdist via `cibuildwheel@2.21`. Publish via PyPI Trusted
-  Publisher (OIDC) on `v2.X.Y-pip` tags or manual dispatch.
-  **One-time PyPI Trusted Publisher registration required before the
-  first publish can fire.** Q3 (witness hash v2 — ADR-117 §11.3)
-  remains the hard gate before tagging.
-- ✅ **P-tomb — v1.99.0 tombstone wheel**: pure-Python wheel
-  (`python/tombstone/`) whose `wifi_densepose/__init__.py` raises
-  ImportError with the migration URL on import. Verified locally
-  (2.7 KB wheel) — `pip install wifi_densepose-1.99.0-py3-none-any.whl`
-  then `python -c "import wifi_densepose"` raises ImportError as
-  expected. Same `pip-release.yml` workflow publishes the tombstone
-  on `v1.99.0-pip` tag. Per ADR-117 §7.3, publish the tombstone
-  BEFORE the first v2.0.0 publish to claim the "current" slot in
-  pip's resolver.
+```python
+import numpy as np
+from wifi_densepose import BfldFrame, BfldKind
 
-Each phase ends with a checkbox PR. Tests are additive — every phase's
-smoke tests must still pass after later phases land.
+# Parse compressed BFR from a Wireshark capture into a Complex64 ndarray ...
+fb = np.zeros((2, 1, 996), dtype=np.complex64)  # Nr=2 Nc=1 Nsc=996 for HE80
 
-## Migrating from v1.x
+frame = BfldFrame.from_compressed_feedback(
+    timestamp_ms=ts,
+    sounding_index=seq,
+    sta_mac="aa:bb:cc:dd:ee:ff",
+    kind=BfldKind.CompressedHE80,
+    feedback_matrix=fb,
+)
+print(frame.n_subcarriers, frame.mean_amplitude)
+```
 
-The v1 line was a separate pure-Python implementation. v2 is a hard
-break (semver-justified by 11.5 months of stack drift). Migration
-guide ships in [docs/migrations/wifi-densepose-1-to-2.md](../docs/migrations/wifi-densepose-1-to-2.md)
-(landing in P5).
+## Hardware
+
+Works with any WiFi chip that exposes CSI. Reference setups (ESP-IDF firmware,
+build scripts, witness-verified test bundles) are in the
+[RuView repo](https://github.com/ruvnet/RuView):
+
+| Device | Cost | Role |
+|---|---|---|
+| ESP32-S3 (8MB flash) | ~$9 | WiFi CSI sensing node |
+| ESP32-S3 SuperMini (4MB) | ~$6 | WiFi CSI (compact) |
+| ESP32-C6 + Seeed MR60BHA2 | ~$15 | mmWave HR/BR/presence add-on |
+
+The legacy v1 line (Wi-Pose-style FastAPI server) is end-of-life;
+`wifi-densepose==1.99.0` is a tombstone that raises `ImportError` pointing
+to v2 with a migration URL.
+
+## Links
+
+- **Repository** — https://github.com/ruvnet/RuView
+- **Modernization plan** — [ADR-117](https://github.com/ruvnet/RuView/blob/main/docs/adr/ADR-117-pip-wifi-densepose-modernization.md)
+- **Home Assistant integration** — [ADR-115](https://github.com/ruvnet/RuView/blob/main/docs/adr/ADR-115-home-assistant-integration.md)
+- **Issues** — https://github.com/ruvnet/RuView/issues
+
+## License
+
+MIT.
