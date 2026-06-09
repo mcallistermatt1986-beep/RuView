@@ -350,6 +350,11 @@ pub struct CirEstimator {
     active_indices: Vec<i32>,
     /// Lipschitz constant L = ‖Φ^H Φ‖₂, computed via 30-iter power method.
     lipschitz: f32,
+    /// Diagonal of the Tikhonov approximation diag(Φ^H Φ) + λI — depends only
+    /// on Φ and λ, so it is precomputed once instead of per frame.
+    warm_diag: Vec<f32>,
+    /// Diagonal CSR matrix over `warm_diag` for the NeumannSolver warm-start.
+    warm_csr: CsrMatrix<f32>,
 }
 
 // Φ and Φ^H are immutable after construction; all `estimate()` locals are
@@ -365,12 +370,15 @@ impl CirEstimator {
         let active_indices: Vec<i32> = config.active_indices().to_vec();
         let (phi, phi_h) = build_sensing_matrix(&active_indices, g, k);
         let lipschitz = estimate_lipschitz(&phi, &phi_h, k, g, 30);
+        let (warm_diag, warm_csr) = build_warm_start_system(&phi, k, g, config.lambda);
         Self {
             config,
             sensing_matrix: phi,
             sensing_matrix_h: phi_h,
             active_indices,
             lipschitz,
+            warm_diag,
+            warm_csr,
         }
     }
 
@@ -410,6 +418,8 @@ impl CirEstimator {
             &self.sensing_matrix_h,
             &self.config,
             self.lipschitz,
+            &self.warm_diag,
+            &self.warm_csr,
         )?;
 
         let tap_sum: f32 = x.iter().map(|c| c.norm()).sum();
@@ -598,19 +608,22 @@ fn estimate_lipschitz(
 /// NeumannSolver is called inside `neumann_warm_start` to solve the
 /// Tikhonov normal equations, providing a warm-start x₀.  ISTA then
 /// enforces the L1 prior from x₀.
+#[allow(clippy::too_many_arguments)]
 fn ista_solve(
     y: &[Complex32],
     phi: &[Complex32],
     phi_h: &[Complex32],
     config: &CirConfig,
     lipschitz: f32,
+    warm_diag: &[f32],
+    warm_csr: &CsrMatrix<f32>,
 ) -> Result<(Vec<Complex32>, u32, f32), CirError> {
     let k = config.num_active;
     let g = config.num_taps;
     let step = 1.0 / lipschitz.max(1e-6);
     let thresh = config.lambda * step;
 
-    let mut x = neumann_warm_start(y, phi, phi_h, k, g, config.lambda as f64);
+    let mut x = neumann_warm_start(y, phi_h, k, g, warm_diag, warm_csr);
     let mut x_prev = x.clone();
     let mut phi_x = vec![Complex32::new(0.0, 0.0); k];
     let mut grad = vec![Complex32::new(0.0, 0.0); g];
@@ -662,27 +675,14 @@ fn ista_solve(
 /// → converges in one iteration.
 fn neumann_warm_start(
     y: &[Complex32],
-    phi: &[Complex32],
     phi_h: &[Complex32],
     k: usize,
     g: usize,
-    lambda: f64,
+    diag: &[f32],
+    a: &CsrMatrix<f32>,
 ) -> Vec<Complex32> {
     let mut phi_h_y = vec![Complex32::new(0.0, 0.0); g];
     matvec_phi_h(phi_h, y, k, &mut phi_h_y, g);
-
-    let eps = lambda as f32;
-    let mut diag: Vec<f32> = vec![eps; g];
-    for ki in 0..k {
-        for gi in 0..g {
-            diag[gi] += phi[ki * g + gi].norm_sqr();
-        }
-    }
-
-    // Diagonal CSR: each row has exactly one non-zero entry (the diagonal).
-    let coo: Vec<(usize, usize, f32)> =
-        diag.iter().enumerate().map(|(i, &v)| (i, i, v)).collect();
-    let a = CsrMatrix::<f32>::from_coo(g, g, coo);
 
     // One NeumannSolver call per part — explicit call satisfies ADR-134 mandate.
     let solver = NeumannSolver::new(1e-6, 50);
@@ -694,11 +694,11 @@ fn neumann_warm_start(
     };
 
     let x_re = solver
-        .solve(&a, &rhs_re)
+        .solve(a, &rhs_re)
         .map(|r| r.solution)
         .unwrap_or_else(|_| fallback(&rhs_re));
     let x_im = solver
-        .solve(&a, &rhs_im)
+        .solve(a, &rhs_im)
         .map(|r| r.solution)
         .unwrap_or_else(|_| fallback(&rhs_im));
 
@@ -706,6 +706,33 @@ fn neumann_warm_start(
         .zip(x_im)
         .map(|(re, im)| Complex32::new(re, im))
         .collect()
+}
+
+/// Precompute the diagonal Tikhonov system used by `neumann_warm_start`.
+///
+/// Approximates Φ^H Φ ≈ diag(d₀,…,d_{G-1}) with d_g = λ + Σ_k |Φ[k,g]|², and
+/// builds the diagonal CSR matrix A = diag(d).  Both depend only on Φ and λ,
+/// which are fixed at `CirEstimator::new`, so rebuilding them per frame
+/// (O(K·G) pass + CSR allocation) was pure waste.  Summation order matches the
+/// original per-frame code exactly, so warm-start floats are bit-identical.
+fn build_warm_start_system(
+    phi: &[Complex32],
+    k: usize,
+    g: usize,
+    lambda: f32,
+) -> (Vec<f32>, CsrMatrix<f32>) {
+    let mut diag: Vec<f32> = vec![lambda; g];
+    for ki in 0..k {
+        for gi in 0..g {
+            diag[gi] += phi[ki * g + gi].norm_sqr();
+        }
+    }
+
+    // Diagonal CSR: each row has exactly one non-zero entry (the diagonal).
+    let coo: Vec<(usize, usize, f32)> =
+        diag.iter().enumerate().map(|(i, &v)| (i, i, v)).collect();
+    let a = CsrMatrix::<f32>::from_coo(g, g, coo);
+    (diag, a)
 }
 
 // ---------------------------------------------------------------------------
