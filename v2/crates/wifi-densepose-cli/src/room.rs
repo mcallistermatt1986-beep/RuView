@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use wifi_densepose_calibration::{
     Anchor, AnchorLabel, AnchorQualityGate, AnchorRecorder, EnrollmentEvent, EnrollmentSession,
-    MixtureOfSpecialists, SpecialistBank,
+    MixtureOfSpecialists, MultiNodeMixture, SpecialistBank,
 };
 use wifi_densepose_calibration::extract::{AnchorFeature, Features};
 use wifi_densepose_core::types::CsiFrame;
@@ -288,9 +288,13 @@ pub async fn room_status(args: RoomStatusArgs) -> Result<()> {
 /// Arguments for `room-watch`.
 #[derive(Args, Debug, Clone)]
 pub struct RoomWatchArgs {
-    /// Specialist-bank file.
+    /// Specialist-bank file (single-node mode).
     #[arg(long, default_value = "./room-bank.json")]
     pub bank: String,
+    /// Multistatic mode: map a node id to its bank as `N:path` (repeatable).
+    /// When supplied, frames are grouped by node id and fused (ADR-029/151).
+    #[arg(long = "node-bank", value_name = "N:PATH")]
+    pub node_bank: Vec<String>,
     /// UDP port for ESP32 CSI frames (raw CSI).
     #[arg(long, default_value_t = 5005)]
     pub udp_port: u16,
@@ -311,8 +315,11 @@ pub struct RoomWatchArgs {
     pub seconds: u32,
 }
 
-/// Execute `room-watch` — live mixture-of-specialists readout.
+/// Execute `room-watch` — live (multistatic) mixture-of-specialists readout.
 pub async fn room_watch(args: RoomWatchArgs) -> Result<()> {
+    if !args.node_bank.is_empty() {
+        return room_watch_multi(args).await;
+    }
     let raw = std::fs::read_to_string(&args.bank)
         .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", args.bank))?;
     let bank = SpecialistBank::from_json(&raw).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -359,6 +366,91 @@ pub async fn room_watch(args: RoomWatchArgs) -> Result<()> {
             println!(
                 "presence={pres:<7} posture={post:<8} breathing={br:<8} heart={hr:<7} restless={rest}{flags}"
             );
+            last_print = Instant::now();
+        }
+    }
+    Ok(())
+}
+
+/// Multistatic `room-watch`: fuse several co-located nodes (ADR-029/151).
+async fn room_watch_multi(args: RoomWatchArgs) -> Result<()> {
+    use std::collections::{BTreeMap, VecDeque};
+
+    let mut mix = MultiNodeMixture::new();
+    let mut node_ids: Vec<u8> = Vec::new();
+    for spec in &args.node_bank {
+        let (id_s, path) = spec
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("--node-bank must be N:path (got {spec:?})"))?;
+        let id: u8 = id_s
+            .parse()
+            .map_err(|_| anyhow::anyhow!("bad node id in {spec:?}"))?;
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("cannot read {path}: {e}"))?;
+        let bank = SpecialistBank::from_json(&raw).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let baseline = bank.baseline_id.clone();
+        mix.add_node(id, bank, baseline);
+        node_ids.push(id);
+    }
+    eprintln!("[room-watch] multistatic over nodes {node_ids:?}");
+
+    let addr = format!("{}:{}", args.bind, args.udp_port);
+    let socket = UdpSocket::bind(&addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("cannot bind {addr}: {e}"))?;
+    eprintln!("[room-watch] fusing on udp://{addr} (window={} frames)", args.window);
+
+    let mut buf = vec![0u8; RECV_BUF];
+    let mut wins: BTreeMap<u8, VecDeque<f32>> = BTreeMap::new();
+    let start = Instant::now();
+    let mut last_print = Instant::now();
+
+    loop {
+        if args.seconds > 0 && start.elapsed() >= Duration::from_secs(args.seconds as u64) {
+            break;
+        }
+        if let Ok(Ok(n)) =
+            tokio::time::timeout(Duration::from_millis(500), socket.recv(&mut buf)).await
+        {
+            if n < 5 {
+                continue;
+            }
+            let node_id = buf[4];
+            if !node_ids.contains(&node_id) {
+                continue;
+            }
+            if let Some(frame) = parse_csi_packet(&buf[..n], &args.tier) {
+                let w = wins.entry(node_id).or_default();
+                w.push_back(frame_scalar(&frame));
+                while w.len() > args.window {
+                    w.pop_front();
+                }
+            }
+        }
+        if last_print.elapsed() >= Duration::from_secs(1) {
+            let per_node: BTreeMap<u8, Features> = wins
+                .iter()
+                .filter(|(_, w)| w.len() >= 32)
+                .map(|(id, w)| {
+                    let series: Vec<f32> = w.iter().copied().collect();
+                    (*id, Features::from_series(&series, args.fs_hz))
+                })
+                .collect();
+            if !per_node.is_empty() {
+                let active: Vec<u8> = per_node.keys().copied().collect();
+                let s = mix.infer(&per_node);
+                let pres = s.presence.as_ref().and_then(|r| r.label.clone()).unwrap_or("-".into());
+                let post = s.posture.as_ref().and_then(|r| r.label.clone()).unwrap_or("-".into());
+                let br = s.breathing.as_ref().map(|r| format!("{:.1}bpm", r.value)).unwrap_or("-".into());
+                let flags = format!(
+                    "{}{}",
+                    if s.vetoed { " VETO" } else { "" },
+                    if s.stale { " STALE" } else { "" }
+                );
+                println!(
+                    "nodes={active:?} presence={pres:<7} posture={post:<8} breathing={br:<8}{flags}"
+                );
+            }
             last_print = Instant::now();
         }
     }
