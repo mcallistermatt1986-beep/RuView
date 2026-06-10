@@ -88,9 +88,9 @@ the optimizer, simulator, response update, or session hashing.
 | Bench | Median | Note |
 |-------|--------|------|
 | `gamma_safety_tick` | ~9.3 ns | vs ADR-250 §17 < 500 ms hard-stop latency bound |
-| `gamma_bandit_select` | ~73 ns | LinUCB decision |
-| `gamma_bayesian_recommend` | ~105 µs | GP + EI over the 0.1 Hz envelope grid |
-| `gamma_calibration_sweep` | ~486 µs | full 9-session enroll → simulate → score → update → witness |
+| `gamma_bandit_select` | ~74 ns | LinUCB decision |
+| `gamma_bayesian_recommend` | ~19 µs | GP + EI over the 0.1 Hz envelope grid (was ~105 µs: the GP is now factorized once per recommend, not once per grid candidate — −81%, bit-identical) |
+| `gamma_calibration_sweep` | ~135 µs | full 9-session enroll → simulate → score → update → witness (was ~486 µs, −71%) |
 
 ## Roadmap (ADR-250 §21)
 

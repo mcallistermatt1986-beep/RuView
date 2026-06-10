@@ -102,17 +102,23 @@ impl BayesianOptimizer {
         best
     }
 
-    /// GP posterior `(mean, variance)` at `x`. Falls back to `(0, signal_var)`
-    /// (the prior) when there are no observations or K is not SPD.
-    pub fn predict(&self, x: f64) -> (f64, f64) {
+    /// Factorize the GP once: Cholesky `L` of `K = RBF(X,X)+noise·I` and the
+    /// weight vector `alpha = K⁻¹ y`. Both depend only on the observations, not
+    /// on any query point, so a single fit serves the whole acquisition grid.
+    /// Returns `None` when there are no observations or `K` is not SPD.
+    ///
+    /// The per-query arithmetic in [`GpFit::predict`] is identical to the old
+    /// inline path, so predictions (and therefore the session witness) are
+    /// bit-for-bit unchanged — this is a pure work-elimination optimization.
+    fn fit(&self) -> Option<GpFit<'_>> {
         let n = self.obs_x.len();
         if n == 0 {
-            return (0.0, self.signal_var);
+            return None;
         }
-        // K = RBF(X,X) + noise·I
+        // K (lower triangle is all Cholesky reads) = RBF(X,X) + noise·I.
         let mut k = vec![0.0f64; n * n];
         for i in 0..n {
-            for j in 0..n {
+            for j in 0..=i {
                 let mut v = rbf_kernel(
                     &[self.obs_x[i]],
                     &[self.obs_x[j]],
@@ -125,22 +131,27 @@ impl BayesianOptimizer {
                 k[i * n + j] = v;
             }
         }
-        let l = match cholesky(&k, n) {
-            Some(l) => l,
-            None => return (0.0, self.signal_var),
-        };
-        // k* = RBF(X, x)
-        let kstar: Vec<f64> = (0..n)
-            .map(|i| rbf_kernel(&[self.obs_x[i]], &[x], self.length_scale, self.signal_var))
-            .collect();
-        // alpha = K^-1 y  (solve L Lᵀ alpha = y)
+        let l = cholesky(&k, n)?;
+        // alpha = K⁻¹ y  (solve L Lᵀ alpha = y) — computed once.
         let y1 = forward_subst(&l, &self.obs_y, n);
         let alpha = back_subst_transpose(&l, &y1, n);
-        let mean = dot(&kstar, &alpha);
-        // var = k(x,x) - v·v, where L v = k*
-        let v = forward_subst(&l, &kstar, n);
-        let var = (self.signal_var - dot(&v, &v)).max(0.0);
-        (mean, var)
+        Some(GpFit {
+            obs_x: &self.obs_x,
+            l,
+            alpha,
+            n,
+            length_scale: self.length_scale,
+            signal_var: self.signal_var,
+        })
+    }
+
+    /// GP posterior `(mean, variance)` at `x`. Falls back to `(0, signal_var)`
+    /// (the prior) when there are no observations or K is not SPD.
+    pub fn predict(&self, x: f64) -> (f64, f64) {
+        match self.fit() {
+            Some(fit) => fit.predict(x),
+            None => (0.0, self.signal_var),
+        }
     }
 
     /// Expected Improvement (for maximization) at `x`.
@@ -149,44 +160,48 @@ impl BayesianOptimizer {
             Some((_, by)) => by,
             None => return self.signal_var.sqrt(), // pure exploration
         };
-        let (mu, var) = self.predict(x);
-        let sigma = var.sqrt();
-        if sigma <= 1e-12 {
-            return 0.0;
+        match self.fit() {
+            Some(fit) => fit.expected_improvement(x, best, self.xi),
+            None => self.signal_var.sqrt(),
         }
-        let imp = mu - best - self.xi;
-        let z = imp / sigma;
-        imp * normal_cdf(z) + sigma * normal_pdf(z)
     }
 
     /// Recommend the next stimulus by maximizing EI over the envelope's 0.1 Hz
     /// grid, holding `base`'s intensity (clamped). The result is guaranteed
     /// inside the envelope. With no observations it returns the 40 Hz prior.
+    ///
+    /// Fits the GP **once** and reuses the factorization across every grid
+    /// candidate (was: a full Cholesky per candidate, ~82× the work).
     pub fn recommend(
         &self,
         envelope: &SafetyEnvelope,
         base: &StimulusParameters,
     ) -> Recommendation {
-        if self.obs_x.is_empty() {
-            let s = envelope.clamp(*base);
-            return Recommendation {
-                stimulus: s,
-                expected_improvement: 0.0,
-                predicted_score: 0.0,
-                confidence: 0.0,
-            };
-        }
+        let fit = match self.fit() {
+            Some(f) => f,
+            None => {
+                let s = envelope.clamp(*base);
+                return Recommendation {
+                    stimulus: s,
+                    expected_improvement: 0.0,
+                    predicted_score: 0.0,
+                    confidence: 0.0,
+                };
+            }
+        };
+        // best() is Some here (fit exists ⇒ ≥1 observation).
+        let best = self.best().map(|(_, by)| by).unwrap_or(0.0);
         let grid = fine_grid(envelope);
         let mut best_f = base.frequency_hz;
         let mut best_ei = f64::NEG_INFINITY;
         for &f in &grid {
-            let ei = self.expected_improvement(f);
+            let ei = fit.expected_improvement(f, best, self.xi);
             if ei > best_ei {
                 best_ei = ei;
                 best_f = f;
             }
         }
-        let (mu, var) = self.predict(best_f);
+        let (mu, var) = fit.predict(best_f);
         let mut s = *base;
         s.frequency_hz = best_f;
         let s = envelope.clamp(s);
@@ -198,6 +213,48 @@ impl BayesianOptimizer {
             // pick → tighter → higher confidence), squashed to [0,1].
             confidence: 1.0 / (1.0 + var.sqrt()),
         }
+    }
+}
+
+/// A cached GP factorization (Cholesky `L` + weights `alpha`) over a fixed set
+/// of observations, reused across many query points in one acquisition pass.
+struct GpFit<'a> {
+    obs_x: &'a [f64],
+    /// Cholesky factor of `K` (lower-triangular, `n×n` row-major).
+    l: Vec<f64>,
+    /// `alpha = K⁻¹ y`.
+    alpha: Vec<f64>,
+    n: usize,
+    length_scale: f64,
+    signal_var: f64,
+}
+
+impl GpFit<'_> {
+    /// Posterior `(mean, variance)` at `x`. Bit-identical to the former inline
+    /// computation; only the shared `L`/`alpha` are now precomputed.
+    fn predict(&self, x: f64) -> (f64, f64) {
+        let n = self.n;
+        // k* = RBF(X, x)
+        let kstar: Vec<f64> = (0..n)
+            .map(|i| rbf_kernel(&[self.obs_x[i]], &[x], self.length_scale, self.signal_var))
+            .collect();
+        let mean = dot(&kstar, &self.alpha);
+        // var = k(x,x) - v·v, where L v = k*
+        let v = forward_subst(&self.l, &kstar, n);
+        let var = (self.signal_var - dot(&v, &v)).max(0.0);
+        (mean, var)
+    }
+
+    /// Expected Improvement at `x` given the incumbent `best` and margin `xi`.
+    fn expected_improvement(&self, x: f64, best: f64, xi: f64) -> f64 {
+        let (mu, var) = self.predict(x);
+        let sigma = var.sqrt();
+        if sigma <= 1e-12 {
+            return 0.0;
+        }
+        let imp = mu - best - xi;
+        let z = imp / sigma;
+        imp * normal_cdf(z) + sigma * normal_pdf(z)
     }
 }
 
