@@ -1043,6 +1043,10 @@ struct AppStateInner {
     engine_bridge: engine_bridge::EngineBridge,
     /// Witness of the most recent governed trust cycle (BLAKE3), for audit/UI.
     pub(crate) last_trust_witness: Option<[u8; 32]>,
+    /// Latest drift→recalibration recommendation from the governed engine
+    /// (ADR-135 → ADR-150 §3.4): sustained low coherence or a change-point
+    /// suggests re-running the empty-room baseline / refitting the room adapter.
+    pub(crate) recalibration_recommended: bool,
     /// SVD-based room field model for eigenvalue person counting (None until calibration).
     field_model: Option<FieldModel>,
     // ── ADR-044 §5.2: adaptive rolling-p95 normalization ─────────────────────
@@ -5069,6 +5073,7 @@ async fn udp_receiver_task(state: SharedState, udp_port: u16) {
                             .process_cycle_from_states(&sref.node_states, now_ms)
                         {
                             sref.last_trust_witness = Some(trust.witness);
+                            sref.recalibration_recommended = trust.recalibration_recommended;
                         }
                     }
 
@@ -5538,6 +5543,7 @@ async fn udp_receiver_task(state: SharedState, udp_port: u16) {
                             .process_cycle_from_states(&sref.node_states, now_ms)
                         {
                             sref.last_trust_witness = Some(trust.witness);
+                            sref.recalibration_recommended = trust.recalibration_recommended;
                         }
                     }
 
@@ -6859,6 +6865,7 @@ async fn main() {
             "Default Room",
         ),
         last_trust_witness: None,
+        recalibration_recommended: false,
         field_model: if args.calibrate {
             info!("Field model calibration enabled — room should be empty during startup");
             FieldModel::new(field_bridge::single_link_config()).ok()

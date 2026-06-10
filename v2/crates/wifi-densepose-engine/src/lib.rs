@@ -97,6 +97,10 @@ pub struct TrustedOutput {
     /// BLAKE3 witness over the trust decision (provenance ‖ class ‖ calibration)
     /// — a deterministic, signed-belief fingerprint (ADR-137 §2.7 / ADR-028).
     pub witness: [u8; 32],
+    /// Whether the drift→recalibration advisor recommends re-running the
+    /// ADR-135 baseline / refitting the per-room adapter (ADR-150 §3.4):
+    /// sustained low coherence or an ADR-142 change-point this cycle.
+    pub recalibration_recommended: bool,
 }
 
 /// Composition root for the RuView streaming engine.
@@ -120,6 +124,68 @@ pub struct StreamingEngine {
     // appends one belief per cycle (1.7M/day at 20 Hz); durable history is the
     // recorder's job, so old beliefs are evicted deterministically past this cap.
     semantic_retention: usize,
+    // Per-room calibration adapter (ADR-150 §3.4: ~11 KB LoRA on a frozen
+    // base). Identity is part of the trust chain: when set, the adapter id is
+    // appended to the provenance model_version, so swapping adapters changes
+    // the witness. None = shared base model.
+    adapter: Option<AdapterInfo>,
+    // Drift→recalibration advisor (ADR-135 trigger for ADR-150 §3.4 refit).
+    recal: RecalibrationAdvisor,
+}
+
+/// Identity of an active per-room calibration adapter (ADR-150 §3.4). The id
+/// must be content-derived (e.g. a hash prefix of the adapter file) so the
+/// provenance/witness chain pins the exact weights that shaped inference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterInfo {
+    /// Content-derived adapter identity (e.g. first 16 hex of its SHA-256).
+    pub adapter_id: String,
+    /// Number of in-room samples the adapter was fitted on (0 if unknown).
+    pub trained_samples: u32,
+}
+
+/// Recommends re-running calibration / adapter refit when the live signal
+/// degrades persistently (ADR-135 drift → ADR-150 §3.4 few-shot recalibration).
+///
+/// Two triggers, both cheap and deterministic:
+/// - `low_coherence_streak`: N consecutive cycles whose base coherence fell
+///   below the floor (sustained degradation, not a single bad frame);
+/// - any ADR-142 change-point this cycle (the environment itself changed).
+#[derive(Debug, Clone)]
+pub struct RecalibrationAdvisor {
+    /// Coherence below this counts toward the streak.
+    pub coherence_floor: f32,
+    /// Consecutive low-coherence cycles required to recommend recalibration.
+    pub streak_threshold: u32,
+    streak: u32,
+}
+
+impl Default for RecalibrationAdvisor {
+    fn default() -> Self {
+        Self {
+            coherence_floor: 0.5,
+            streak_threshold: 60, // ~3 s at 20 Hz of sustained degradation
+            streak: 0,
+        }
+    }
+}
+
+impl RecalibrationAdvisor {
+    /// Feed one cycle's evidence; returns whether recalibration is recommended.
+    fn observe(&mut self, base_coherence: f32, change_point: bool) -> bool {
+        if base_coherence < self.coherence_floor {
+            self.streak = self.streak.saturating_add(1);
+        } else {
+            self.streak = 0;
+        }
+        change_point || self.streak >= self.streak_threshold
+    }
+
+    /// Current consecutive low-coherence cycle count.
+    #[must_use]
+    pub fn streak(&self) -> u32 {
+        self.streak
+    }
 }
 
 impl StreamingEngine {
@@ -140,7 +206,33 @@ impl StreamingEngine {
             slam: RfSlam::with_discovery(0.5, 5, 0.6),
             person_tracks: BTreeMap::new(),
             semantic_retention: Self::DEFAULT_SEMANTIC_RETENTION,
+            adapter: None,
+            recal: RecalibrationAdvisor::default(),
         }
+    }
+
+    /// Activate a per-room calibration adapter (ADR-150 §3.4). From the next
+    /// cycle on, the adapter id is part of provenance `model_version` — and
+    /// therefore of the witness — so the exact weights shaping inference are
+    /// pinned in the trust chain. Pass the result of hashing the adapter file.
+    pub fn set_room_adapter(&mut self, info: AdapterInfo) {
+        self.adapter = Some(info);
+    }
+
+    /// Deactivate the adapter (revert to the shared base model).
+    pub fn clear_room_adapter(&mut self) {
+        self.adapter = None;
+    }
+
+    /// The active adapter, if any.
+    #[must_use]
+    pub fn room_adapter(&self) -> Option<&AdapterInfo> {
+        self.adapter.as_ref()
+    }
+
+    /// Tune the drift→recalibration advisor (floor + streak threshold).
+    pub fn set_recalibration_advisor(&mut self, advisor: RecalibrationAdvisor) {
+        self.recal = advisor;
     }
 
     /// Default cap on live `SemanticState` beliefs in the WorldGraph
@@ -344,13 +436,20 @@ impl StreamingEngine {
 
         // 6. Semantic state with mandatory provenance (ADR-139/140). The
         //    calibration version comes from the *agreed* epoch (None on mismatch).
+        //    When a per-room adapter is active (ADR-150 §3.4) its content-derived
+        //    id is part of model_version — and therefore of the witness — so the
+        //    exact weights shaping inference are pinned in the trust chain.
         let calibration_version = match quality.calibration_id {
             Some(c) => format!("cal:{:016x}", c.0),
             None => "cal:none".to_string(),
         };
+        let model_version = match &self.adapter {
+            Some(a) => format!("rfenc-v{}+adapter:{}", self.model_version, a.adapter_id),
+            None => format!("rfenc-v{}", self.model_version),
+        };
         let provenance = SemanticProvenance {
             evidence: quality.evidence_refs.iter().map(|e| format!("{e:?}")).collect(),
-            model_version: format!("rfenc-v{}", self.model_version),
+            model_version,
             calibration_version,
             privacy_decision: format!("{:?}/{:?}", self.privacy.active_mode(), effective_class),
         };
@@ -373,6 +472,11 @@ impl StreamingEngine {
         // 7. Deterministic witness over the trust decision (ADR-137 §2.7).
         let witness = witness_of(&provenance, effective_class);
 
+        // 8. Drift→recalibration advisor (ADR-135 → ADR-150 §3.4): sustained
+        //    low coherence or an environment change-point recommends refit.
+        let recalibration_recommended =
+            self.recal.observe(quality.base_coherence, change_point.is_some());
+
         self.cycle += 1;
         Ok(TrustedOutput {
             semantic_id,
@@ -383,6 +487,7 @@ impl StreamingEngine {
             directional,
             change_point,
             witness,
+            recalibration_recommended,
         })
     }
 
@@ -564,6 +669,93 @@ mod tests {
         assert_eq!(o1.provenance.evidence, o2.provenance.evidence);
         assert_eq!(o1.effective_class, o2.effective_class);
         assert_eq!(o1.quality.per_node_weights, o2.quality.per_node_weights);
+    }
+
+    /// ADR-150 §3.4 adapter provenance: activating a per-room adapter changes
+    /// the provenance model_version AND the witness — the exact weights shaping
+    /// inference are pinned in the trust chain, so an adapter can never swap
+    /// silently. Clearing it restores the base identity (and base witness).
+    #[test]
+    fn adapter_identity_is_witnessed() {
+        let cal = CalibrationId(9);
+        let frames = [node_frame(0, 1000, 56), node_frame(1, 1001, 56)];
+
+        let (mut e, room) = engine();
+        let base = e.process_cycle(&frames, cal, room, 1_000).unwrap();
+        assert_eq!(base.provenance.model_version, "rfenc-v1");
+
+        e.set_room_adapter(AdapterInfo {
+            adapter_id: "a1b2c3d4e5f60718".into(),
+            trained_samples: 150,
+        });
+        let adapted = e.process_cycle(&frames, cal, room, 2_000).unwrap();
+        assert_eq!(
+            adapted.provenance.model_version,
+            "rfenc-v1+adapter:a1b2c3d4e5f60718"
+        );
+        assert_ne!(adapted.witness, base.witness, "adapter must shift the witness");
+
+        // A different adapter id yields a different witness again.
+        e.set_room_adapter(AdapterInfo {
+            adapter_id: "ffffffffffffffff".into(),
+            trained_samples: 150,
+        });
+        let other = e.process_cycle(&frames, cal, room, 3_000).unwrap();
+        assert_ne!(other.witness, adapted.witness);
+
+        // Clearing restores the base identity and the base witness.
+        e.clear_room_adapter();
+        let back = e.process_cycle(&frames, cal, room, 4_000).unwrap();
+        assert_eq!(back.provenance.model_version, "rfenc-v1");
+        assert_eq!(back.witness, base.witness);
+    }
+
+    /// Drift→recalibration advisor logic: a sustained low-coherence streak
+    /// recommends refit; a single healthy cycle resets the streak; a
+    /// change-point recommends immediately regardless of streak.
+    #[test]
+    fn recalibration_advisor_streak_and_change_point() {
+        let mut adv = RecalibrationAdvisor {
+            coherence_floor: 0.5,
+            streak_threshold: 3,
+            ..Default::default()
+        };
+        // Healthy cycles never recommend and keep the streak at zero.
+        for _ in 0..5 {
+            assert!(!adv.observe(0.9, false));
+        }
+        assert_eq!(adv.streak(), 0);
+        // Two low cycles: not yet.
+        assert!(!adv.observe(0.2, false));
+        assert!(!adv.observe(0.2, false));
+        // Third consecutive low cycle: fire.
+        assert!(adv.observe(0.2, false));
+        // Recovery resets the streak.
+        assert!(!adv.observe(0.9, false));
+        assert_eq!(adv.streak(), 0);
+        // A change-point recommends immediately, even at full coherence.
+        assert!(adv.observe(0.9, true));
+    }
+
+    /// Engine-level: clean coherent cycles never recommend recalibration (the
+    /// advisor is wired into process_cycle and stays quiet on healthy input).
+    #[test]
+    fn healthy_cycles_do_not_recommend_recalibration() {
+        let (mut e, room) = engine();
+        e.set_recalibration_advisor(RecalibrationAdvisor {
+            coherence_floor: 0.5,
+            streak_threshold: 3,
+            ..Default::default()
+        });
+        let cal = CalibrationId(2);
+        for i in 0..5u64 {
+            let frames = [
+                node_frame(0, 1_000 + i * 50_000, 56),
+                node_frame(1, 1_001 + i * 50_000, 56),
+            ];
+            let out = e.process_cycle(&frames, cal, room, i as i64).unwrap();
+            assert!(!out.recalibration_recommended);
+        }
     }
 
     /// WorldGraph belief retention: the live loop appends one SemanticState per

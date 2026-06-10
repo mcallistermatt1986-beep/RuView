@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use wifi_densepose_bfld::PrivacyMode;
-use wifi_densepose_engine::{EngineError, StreamingEngine, TrustedOutput};
+use wifi_densepose_engine::{AdapterInfo, EngineError, StreamingEngine, TrustedOutput};
 use wifi_densepose_geo::types::GeoRegistration;
 use wifi_densepose_signal::ruvsense::fusion_quality::CalibrationId;
 use wifi_densepose_worldgraph::WorldId;
@@ -67,6 +67,18 @@ impl EngineBridge {
     /// Switch the active privacy mode (operator/control-plane action).
     pub fn set_privacy_mode(&mut self, mode: PrivacyMode) {
         self.engine.set_privacy_mode(mode);
+    }
+
+    /// Activate a per-room calibration adapter (ADR-150 §3.4). The adapter's
+    /// content-derived id becomes part of provenance/witness from the next
+    /// cycle — weights can never swap silently on the live path.
+    pub fn set_room_adapter(&mut self, info: AdapterInfo) {
+        self.engine.set_room_adapter(info);
+    }
+
+    /// Deactivate the per-room adapter (revert to the shared base model).
+    pub fn clear_room_adapter(&mut self) {
+        self.engine.clear_room_adapter();
     }
 
     /// Borrow the engine (queries, WorldGraph snapshot, privacy audit).
@@ -213,6 +225,36 @@ mod tests {
         }
         // room + 2 sensors + at most 5 retained beliefs.
         assert!(bridge.engine().world().node_count() <= 3 + 5);
+    }
+
+    #[test]
+    fn adapter_identity_flows_into_live_witness() {
+        let states = two_node_states_fixed();
+        let mut bridge = EngineBridge::new(PrivacyMode::PrivateHome, 1, "r", "R");
+        let base = bridge
+            .process_cycle_from_states(&states, 1_000)
+            .unwrap()
+            .unwrap();
+        bridge.set_room_adapter(AdapterInfo {
+            adapter_id: "deadbeefcafef00d".into(),
+            trained_samples: 120,
+        });
+        let adapted = bridge
+            .process_cycle_from_states(&states, 2_000)
+            .unwrap()
+            .unwrap();
+        assert!(adapted
+            .provenance
+            .model_version
+            .ends_with("+adapter:deadbeefcafef00d"));
+        assert_ne!(adapted.witness, base.witness);
+        // Clearing reverts to the base model identity.
+        bridge.clear_room_adapter();
+        let back = bridge
+            .process_cycle_from_states(&states, 3_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(back.provenance.model_version, "rfenc-v1");
     }
 
     #[test]
