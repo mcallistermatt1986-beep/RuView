@@ -31,9 +31,12 @@ the container; this is an environment limitation, not a code failure).
 | L1 deterministic proof | `python archive/v1/data/proof/verify.py` | **VERDICT: PASS** — hash `f8e76f21a0f9852b70b6d9dd5318239f6b20cbcb4cdd995863263cecdc446f7a` (bit-exact) |
 | L2 criterion (CIR) | `cargo bench -p wifi-densepose-signal --bench cir_bench --no-default-features --features cir` | Baselines captured pre/post optimization (below) |
 
-Known pre-existing issue (not introduced here): `cargo check -p
+~~Known pre-existing issue (not introduced here): `cargo check -p
 wifi-densepose-mat --no-default-features` fails standalone with 101 serde
-feature-unification errors; it builds and passes inside `--workspace` runs.
+feature-unification errors; it builds and passes inside `--workspace` runs.~~
+**Fixed on this branch:** `pub mod api` (the only serde user) is now gated
+behind the `api` feature that owns the optional serde dependency; all feature
+combos compile.
 
 ## Optimizations applied (this session)
 
