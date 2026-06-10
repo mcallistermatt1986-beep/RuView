@@ -68,10 +68,12 @@
 //! assert!(envelope.contains(&rec.stimulus)); // always inside the envelope
 //! ```
 
+pub mod acceptance;
 pub mod bandit;
 pub mod math;
 pub mod objective;
 pub mod optimizer;
+pub mod program;
 pub mod proof;
 pub mod response;
 pub mod ruflo;
@@ -163,6 +165,78 @@ mod integration_tests {
         // Honesty: priors are not measured data.
         assert!(warm.audit_log().is_empty());
         assert_eq!(warm.clinician_report().n_sessions, 0);
+    }
+
+    /// Platform extension: each program enforces its **own** safety envelope.
+    /// A stimulus that is fine for the Alzheimer's program (brightness 0.30)
+    /// exceeds the sleep program's near-dark cap (0.10) and is refused.
+    #[test]
+    fn per_program_envelope_is_enforced() {
+        use crate::program::NeuroProgram;
+        use crate::stimulus::StimulusParameters;
+
+        let sim = ResponseSimulator::new(5);
+        let latent = LatentPerson::from_id("prog-subject");
+        let state = RuViewState::calm_baseline();
+
+        // 0.30 brightness: inside Alzheimer's envelope, outside sleep's (0.10).
+        let mut stim = StimulusParameters::prior();
+        stim.frequency_hz = 40.0;
+        stim.brightness_level = 0.30;
+
+        let mut alz = RufloGovernor::enroll_program(
+            "p1",
+            NeuroProgram::alzheimers_research(),
+            &[],
+            Consent::Granted,
+        )
+        .unwrap();
+        assert!(alz.run_session(&sim, &latent, &state, &stim, 0).is_ok());
+
+        let mut sleep = RufloGovernor::enroll_program(
+            "p2",
+            NeuroProgram::sleep_optimization(),
+            &[],
+            Consent::Granted,
+        )
+        .unwrap();
+        // The same stimulus is out-of-envelope for the sleep program.
+        assert!(sleep.run_session(&sim, &latent, &state, &stim, 0).is_err());
+        // Its own prior (audio, near-dark) is accepted.
+        let prior = sleep.prior();
+        assert!(sleep.program().unwrap().envelope.contains(&prior));
+    }
+
+    /// Platform acceptance matrix: every catalog program is gradable and the
+    /// claim gate is total (always yields a releasable string; a failing
+    /// program never leaks its marketing claim).
+    #[test]
+    fn acceptance_matrix_gates_every_program_claim() {
+        use crate::acceptance::{AcceptanceCriteria, AcceptanceHarness, NO_CLAIM};
+        use crate::program::NeuroProgram;
+
+        // A detuned subject so adaptive programs have real gain to find.
+        let mut chosen = None;
+        for n in 0..80 {
+            let id = format!("matrix-{n}");
+            let p = LatentPerson::from_id(&id);
+            if (p.peak_hz - 40.0).abs() > 2.0 && p.peak_hz > 37.5 && p.peak_hz < 42.5 {
+                chosen = Some(p);
+                break;
+            }
+        }
+        let person = chosen.expect("detuned subject");
+        let harness = AcceptanceHarness::new(42, AcceptanceCriteria::default());
+        let state = RuViewState::calm_baseline();
+        for program in NeuroProgram::catalog() {
+            let report = harness.evaluate(&program, &person, &state);
+            assert!(!report.released_claim.is_empty());
+            if report.overall_pass {
+                assert_eq!(report.claim_gate().claim(), program.claim);
+            } else {
+                assert_eq!(report.claim_gate().claim(), NO_CLAIM);
+            }
+        }
     }
 
     /// ADR-250 §10 item 4: a stable participant stays `Stable`; collapsing

@@ -43,6 +43,8 @@ conservative floor, never the cap.
 | `optimizer` | §8 | Phase-1 calibration sweep, Phase-2 GP + Expected-Improvement, Phase-4 closed-loop control |
 | `bandit` | §8 P3 | LinUCB contextual bandit over envelope-safe arms |
 | `ruvector` | §10 items 3–6 | anonymized `ProfileStore` (one-way hashed tags), deterministic kNN, cohort warm-start priors (down-weighted pseudo-observations), `DriftDetector` over the physiological sub-vector, deterministic k-means clustering |
+| `program` | §23 | `NeuroProgram` catalog (7 use cases) — per-program envelope, prior, objective, state-gating, evidence level, and gated claim |
+| `acceptance` | §18/§23.1 | `AcceptanceHarness` + `ClaimGate` — entrainment/safety/adherence/repeatability gate; a program's claim is unreadable until all four pass |
 | `session` | §11, §13 | hashable `SessionRecord`, reproducible `session_hash` (SHA-256, quantized canonical form) |
 | `ruflo` | §11 | consent → exclusion → envelope → run → monitor → score → update → witnessed audit; trial/sham mode; clinician export; claim discipline |
 | `proof` | — | deterministic bundle witness (mirrors `nvsim` / `verify.py`) |
@@ -94,6 +96,39 @@ the optimizer, simulator, response update, or session hashing.
 | `gamma_calibration_sweep` | ~135 µs | full 9-session enroll → simulate → score → update → witness (was ~486 µs, −71%) |
 | `gamma_cohort_knn_500` | ~15 µs | exact kNN over 500 anonymized profiles |
 | `gamma_cohort_warm_start_500` | ~16 µs | full cohort prior construction (runs once per enrollment) |
+| `gamma_acceptance_grade_program` | ~425 µs | full 3-repeat program acceptance grading (offline gate) |
+
+## Adaptive sensory neuromodulation platform (ADR-250 §23)
+
+40 Hz is one prior in one program — the engine is a general personal
+neural-rhythm optimization platform. `NeuroProgram::catalog()` ships seven use
+cases (Alzheimer's research, post-stroke cognition, sleep optimization,
+attention/working-memory, mood/arousal, home wellness, drug+device trial
+infrastructure), each with its **own** safety envelope, prior, objective
+weighting, physiological-state gating (the sleep program permits `Asleep` and
+caps brightness near-dark; attention requires wakefulness), evidence level, and
+a single non-disease claim. `RufloGovernor::enroll_program` wires it all in;
+`enroll` stays the bare Alzheimer's-defaults path (so the pinned witness holds).
+
+**Claim discipline is executable.** A program's claim can only be read through
+the acceptance gate:
+
+```rust
+use ruview_gamma::acceptance::{AcceptanceHarness, AcceptanceCriteria};
+use ruview_gamma::program::NeuroProgram;
+# use ruview_gamma::simulator::LatentPerson;
+# use ruview_gamma::response::RuViewState;
+
+let harness = AcceptanceHarness::new(42, AcceptanceCriteria::default());
+let report = harness.evaluate(
+    &NeuroProgram::sleep_optimization(),
+    &LatentPerson::from_id("subject"),
+    &RuViewState::calm_baseline(),
+);
+// Returns the program claim ONLY if entrainment + safety + adherence +
+// repeatability all pass; otherwise the research-only NO_CLAIM string.
+let _claim = report.claim_gate().claim();
+```
 
 ## Self-learning across people (ADR-250 §10)
 

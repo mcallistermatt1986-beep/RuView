@@ -9,7 +9,8 @@
 
 use crate::objective::{SafeEntrainmentObjective, ScoreInputs};
 use crate::optimizer::{BayesianOptimizer, CalibrationPlan, Recommendation};
-use crate::response::{PersonResponseVector, RuViewState, SessionObservation, SubjectiveReport};
+use crate::program::NeuroProgram;
+use crate::response::{PersonResponseVector, RuViewState, SessionObservation, SleepState, SubjectiveReport};
 use crate::ruvector::{AnonymizedProfile, DriftDetector, DriftStatus, ProfileStore};
 use crate::safety::{
     ExclusionCondition, ExclusionScreen, SafetyMonitor, SafetyTick, ScreenOutcome, StopReason,
@@ -80,6 +81,10 @@ pub struct RufloGovernor {
     // ADR-250 §10 item 4: per-person drift detection over the response vector.
     drift: DriftDetector,
     drift_status: DriftStatus,
+    // Platform extension: the program this participant is enrolled under
+    // (envelope/prior/objective/state-gating/claim). `None` for the bare
+    // `enroll` path (Alzheimer's defaults), which keeps the pinned witness.
+    program: Option<NeuroProgram>,
 }
 
 impl RufloGovernor {
@@ -115,7 +120,49 @@ impl RufloGovernor {
             next_index: 0,
             drift: DriftDetector::default(),
             drift_status: DriftStatus::Warmup,
+            program: None,
         })
+    }
+
+    /// Enroll a participant under a [`NeuroProgram`] (the platform path): the
+    /// program supplies the safety envelope, starting prior, and objective
+    /// weighting for this use case. Same fail-closed consent/exclusion gate as
+    /// [`enroll`](Self::enroll). The program's claim is only releasable through
+    /// the acceptance gate (`crate::acceptance`), never directly.
+    pub fn enroll_program(
+        person_id: impl Into<String>,
+        program: NeuroProgram,
+        conditions: &[ExclusionCondition],
+        consent: Consent,
+    ) -> Result<Self, GovernanceError> {
+        let mut gov = Self::enroll(person_id, program.envelope, conditions, consent)?;
+        gov.objective = SafeEntrainmentObjective::new(program.weights, program.envelope);
+        gov.versions.protocol_version = format!("adr-250-{}-v0.1", program.id);
+        gov.program = Some(program);
+        Ok(gov)
+    }
+
+    /// The program this participant is enrolled under, if any.
+    pub fn program(&self) -> Option<&NeuroProgram> {
+        self.program.as_ref()
+    }
+
+    /// The program's starting prior, or the ADR-250 40 Hz prior if none.
+    pub fn prior(&self) -> StimulusParameters {
+        self.program
+            .as_ref()
+            .map(|p| p.prior)
+            .unwrap_or_else(StimulusParameters::prior)
+    }
+
+    /// Whether a session in `state` fits the enrolled program's protocol
+    /// (e.g. the sleep program permits `Asleep`). Programs without state
+    /// constraints (the bare path) accept any state.
+    pub fn state_eligible(&self, state: SleepState) -> bool {
+        self.program
+            .as_ref()
+            .map(|p| p.state_eligible(state))
+            .unwrap_or(true)
     }
 
     /// Seed the optimizer from a cohort of anonymized similar responders

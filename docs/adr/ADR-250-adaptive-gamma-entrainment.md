@@ -197,6 +197,47 @@ bit-exactly before any hardware or human exposure. Hardware actuation, real RF
 sensing, and real EEG land behind feature flags / external adapters; this crate
 implements the governed software core and its proofs.
 
+## 23. Platform Generalization — Adaptive Sensory Neuromodulation
+
+The broader opportunity is **adaptive sensory neuromodulation**, not just
+Alzheimer's. 40 Hz is one prior in one program; the engine is a personal
+neural-rhythm optimization platform. RuView turns the body into the feedback
+signal, RuVector turns repeated sessions into a personal response map, the
+device is the actuator, and RuFlo makes the loop governed and auditable.
+
+Each use case is a `NeuroProgram` (`program.rs`) bundling its own safety
+envelope, starting prior, objective weighting, physiological-state gating,
+evidence level, and the single non-disease claim it may surface:
+
+| Program | Evidence level | RuView / RuVector role | Released claim |
+|---------|----------------|------------------------|----------------|
+| `alzheimers-research` | Medium preclinical, early human | Adaptive entrainment + trial monitoring | personalized entrainment optimization |
+| `post-stroke-cognition` | Early human | Recovery-state tracking (ramped, comfort-weighted) | …with recovery-state monitoring |
+| `sleep-optimization` | Early but plausible | Time stimulation to sleep state (audio, near-dark cap) | sleep-state-timed entrainment optimization |
+| `attention-working-memory` | Mixed / protocol-dependent | Personal frequency discovery (entrainment-weighted) | personalized frequency-response discovery |
+| `mood-arousal` | Early human | Avoid overstimulation, tune calming response | personalized calming-response optimization |
+| `home-wellness` | Speculative | Safe personalization without treatment claims | personal neural-rhythm wellness optimization |
+| `trial-infrastructure` | Strong infrastructure | Governed protocol/safety/consent/sham log | governed, reproducible protocol measurement |
+
+**Claim discipline is structural.** A program's claim is always an
+optimization/monitoring statement, never a disease-treatment claim; the disease
+*context* lives only in `EvidenceLevel`. A claim is releasable **only** through
+the acceptance gate.
+
+### 23.1 Generalized acceptance gate (`acceptance.rs`)
+
+> Every use case must show measurable **entrainment**, **safety**,
+> **adherence**, and **repeatability** before making any disease claim.
+
+`AcceptanceHarness::evaluate(program, person, state)` runs the program over ≥3
+independent repeats and measures: adaptive-vs-fixed-prior entrainment gain,
+safety-stop rate, mean adherence, and the spread of the discovered optimal
+frequency. The resulting `AcceptanceReport` exposes a `ClaimGate` that returns
+the program's claim **iff all four criteria pass**, and the research-only
+`NO_CLAIM` string otherwise — the program's marketing claim cannot be read
+except through this gate. This makes the acceptance sentence executable, not
+aspirational, and applies uniformly to all seven programs.
+
 ## 22. Final Decision Statement
 
 We build Adaptive Gamma Entrainment as a governed RuView + RuVector

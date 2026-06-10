@@ -7,8 +7,10 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
+use ruview_gamma::acceptance::{AcceptanceCriteria, AcceptanceHarness};
 use ruview_gamma::bandit::{BanditContext, ContextualBandit};
 use ruview_gamma::optimizer::BayesianOptimizer;
+use ruview_gamma::program::NeuroProgram;
 use ruview_gamma::response::RuViewState;
 use ruview_gamma::ruflo::{Consent, RufloGovernor};
 use ruview_gamma::ruvector::{AnonymizedProfile, ProfileStore, VECTOR_DIM};
@@ -109,12 +111,23 @@ fn bench_cohort_knn(c: &mut Criterion) {
     });
 }
 
+fn bench_acceptance(c: &mut Criterion) {
+    let harness = AcceptanceHarness::new(42, AcceptanceCriteria::default());
+    let program = NeuroProgram::sleep_optimization();
+    let person = LatentPerson::from_id("bench-acc-subject");
+    let state = RuViewState::calm_baseline();
+    c.bench_function("gamma_acceptance_grade_program", |b| {
+        b.iter(|| black_box(harness.evaluate(black_box(&program), &person, &state)))
+    });
+}
+
 criterion_group!(
     benches,
     bench_calibration,
     bench_recommend,
     bench_safety_tick,
     bench_bandit,
-    bench_cohort_knn
+    bench_cohort_knn,
+    bench_acceptance
 );
 criterion_main!(benches);
