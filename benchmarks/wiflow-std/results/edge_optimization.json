@@ -235,5 +235,396 @@
         7.8067296875019565
       ]
     }
+  },
+  "onnx_static_ptq": {
+    "env": {
+      "onnxruntime": "1.26.0",
+      "torch": "2.12.0+cpu",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "source_model": "retrained_fp32_dynamic.onnx",
+      "preprocessed_model": {
+        "file": "retrained_fp32_preproc.onnx",
+        "size_mb": 8.981529
+      }
+    },
+    "variants": {
+      "minmax_all": {
+        "file": "retrained_int8_static_minmax_all.onnx",
+        "size_bytes": 2604286,
+        "size_mb": 2.604286,
+        "calibration": {
+          "method": "minmax",
+          "windows": 1000,
+          "percentile": null,
+          "seconds": 5.052440166473389
+        },
+        "scope": "all",
+        "per_channel": true,
+        "activation_type": "QInt8",
+        "weight_type": "QInt8",
+        "node_counts": {
+          "Add": 9,
+          "AveragePool": 1,
+          "BatchNormalization": 12,
+          "Concat": 10,
+          "Conv": 43,
+          "DequantizeLinear": 283,
+          "Einsum": 4,
+          "Gather": 16,
+          "Mul": 39,
+          "QuantizeLinear": 181,
+          "Reshape": 14,
+          "Shape": 2,
+          "Sigmoid": 37,
+          "Slice": 8,
+          "Softmax": 2,
+          "Squeeze": 1,
+          "Transpose": 7,
+          "Unsqueeze": 11
+        },
+        "max_abs_diff_vs_fp32_fixture": 0.015945255756378174,
+        "accuracy": {
+          "samples": 10000,
+          "pck@20": 0.9545266661643982,
+          "pck@50": 0.9913666645050049,
+          "mpjpe": 0.014860070134699345,
+          "wall_seconds": 43.455235958099365
+        }
+      },
+      "minmax_conv": {
+        "file": "retrained_int8_static_minmax_conv.onnx",
+        "size_bytes": 2527421,
+        "size_mb": 2.527421,
+        "calibration": {
+          "method": "minmax",
+          "windows": 1000,
+          "percentile": null,
+          "seconds": 4.380746126174927
+        },
+        "scope": "conv",
+        "per_channel": true,
+        "activation_type": "QInt8",
+        "weight_type": "QInt8",
+        "node_counts": {
+          "Add": 9,
+          "AveragePool": 1,
+          "BatchNormalization": 12,
+          "Concat": 10,
+          "Conv": 43,
+          "DequantizeLinear": 156,
+          "Einsum": 4,
+          "Gather": 16,
+          "Mul": 39,
+          "QuantizeLinear": 78,
+          "Reshape": 14,
+          "Shape": 2,
+          "Sigmoid": 37,
+          "Slice": 8,
+          "Softmax": 2,
+          "Squeeze": 1,
+          "Transpose": 7,
+          "Unsqueeze": 11
+        },
+        "max_abs_diff_vs_fp32_fixture": 0.010693132877349854,
+        "accuracy": {
+          "samples": 10000,
+          "pck@20": 0.9663399996757507,
+          "pck@50": 0.9918666641235352,
+          "mpjpe": 0.01084446222037077,
+          "wall_seconds": 35.937947034835815
+        }
+      },
+      "entropy_all": {
+        "file": "retrained_int8_static_entropy_all.onnx",
+        "size_bytes": 2604268,
+        "size_mb": 2.604268,
+        "calibration": {
+          "method": "entropy",
+          "windows": 512,
+          "percentile": null,
+          "seconds": 23.835066318511963
+        },
+        "scope": "all",
+        "per_channel": true,
+        "activation_type": "QInt8",
+        "weight_type": "QInt8",
+        "node_counts": {
+          "Add": 9,
+          "AveragePool": 1,
+          "BatchNormalization": 12,
+          "Concat": 10,
+          "Conv": 43,
+          "DequantizeLinear": 283,
+          "Einsum": 4,
+          "Gather": 16,
+          "Mul": 39,
+          "QuantizeLinear": 181,
+          "Reshape": 14,
+          "Shape": 2,
+          "Sigmoid": 37,
+          "Slice": 8,
+          "Softmax": 2,
+          "Squeeze": 1,
+          "Transpose": 7,
+          "Unsqueeze": 11
+        },
+        "max_abs_diff_vs_fp32_fixture": 0.015280365943908691,
+        "accuracy": {
+          "samples": 10000,
+          "pck@20": 0.9530466662406921,
+          "pck@50": 0.9912600006103516,
+          "mpjpe": 0.015098519864678382,
+          "wall_seconds": 51.514281034469604
+        }
+      },
+      "entropy_conv": {
+        "file": "retrained_int8_static_entropy_conv.onnx",
+        "size_bytes": 2527403,
+        "size_mb": 2.527403,
+        "calibration": {
+          "method": "entropy",
+          "windows": 512,
+          "percentile": null,
+          "seconds": 9.634419918060303
+        },
+        "scope": "conv",
+        "per_channel": true,
+        "activation_type": "QInt8",
+        "weight_type": "QInt8",
+        "node_counts": {
+          "Add": 9,
+          "AveragePool": 1,
+          "BatchNormalization": 12,
+          "Concat": 10,
+          "Conv": 43,
+          "DequantizeLinear": 156,
+          "Einsum": 4,
+          "Gather": 16,
+          "Mul": 39,
+          "QuantizeLinear": 78,
+          "Reshape": 14,
+          "Shape": 2,
+          "Sigmoid": 37,
+          "Slice": 8,
+          "Softmax": 2,
+          "Squeeze": 1,
+          "Transpose": 7,
+          "Unsqueeze": 11
+        },
+        "max_abs_diff_vs_fp32_fixture": 0.012535125017166138,
+        "accuracy": {
+          "samples": 10000,
+          "pck@20": 0.9659599989891052,
+          "pck@50": 0.9918666648864746,
+          "mpjpe": 0.010778637571632861,
+          "wall_seconds": 41.01180171966553
+        }
+      },
+      "percentile_all": {
+        "file": "retrained_int8_static_percentile_all.onnx",
+        "size_bytes": 2604052,
+        "size_mb": 2.604052,
+        "calibration": {
+          "method": "percentile",
+          "windows": 512,
+          "percentile": 99.99,
+          "seconds": 20.221954584121704
+        },
+        "scope": "all",
+        "per_channel": true,
+        "activation_type": "QInt8",
+        "weight_type": "QInt8",
+        "node_counts": {
+          "Add": 9,
+          "AveragePool": 1,
+          "BatchNormalization": 12,
+          "Concat": 10,
+          "Conv": 43,
+          "DequantizeLinear": 283,
+          "Einsum": 4,
+          "Gather": 16,
+          "Mul": 39,
+          "QuantizeLinear": 181,
+          "Reshape": 14,
+          "Shape": 2,
+          "Sigmoid": 37,
+          "Slice": 8,
+          "Softmax": 2,
+          "Squeeze": 1,
+          "Transpose": 7,
+          "Unsqueeze": 11
+        },
+        "max_abs_diff_vs_fp32_fixture": 0.017689883708953857,
+        "accuracy": {
+          "samples": 10000,
+          "pck@20": 0.9639333323478698,
+          "pck@50": 0.9916799991607667,
+          "mpjpe": 0.012176512064039708,
+          "wall_seconds": 49.365190744400024
+        }
+      },
+      "percentile_conv": {
+        "file": "retrained_int8_static_percentile_conv.onnx",
+        "size_bytes": 2527241,
+        "size_mb": 2.527241,
+        "calibration": {
+          "method": "percentile",
+          "windows": 512,
+          "percentile": 99.99,
+          "seconds": 8.223475694656372
+        },
+        "scope": "conv",
+        "per_channel": true,
+        "activation_type": "QInt8",
+        "weight_type": "QInt8",
+        "node_counts": {
+          "Add": 9,
+          "AveragePool": 1,
+          "BatchNormalization": 12,
+          "Concat": 10,
+          "Conv": 43,
+          "DequantizeLinear": 156,
+          "Einsum": 4,
+          "Gather": 16,
+          "Mul": 39,
+          "QuantizeLinear": 78,
+          "Reshape": 14,
+          "Shape": 2,
+          "Sigmoid": 37,
+          "Slice": 8,
+          "Softmax": 2,
+          "Squeeze": 1,
+          "Transpose": 7,
+          "Unsqueeze": 11
+        },
+        "max_abs_diff_vs_fp32_fixture": 0.014725983142852783,
+        "accuracy": {
+          "samples": 10000,
+          "pck@20": 0.9660599988937378,
+          "pck@50": 0.9916066654205322,
+          "mpjpe": 0.010310938355326652,
+          "wall_seconds": 36.89548587799072
+        }
+      }
+    },
+    "latency": {
+      "note": "3 interleaved repetitions per variant, median ms/window; onnx_fp32 / onnx_int8_ort_dynamic are same-session references",
+      "onnx_fp32": {
+        "batch1_reps": [
+          4.5327999996516155,
+          2.535649999117595,
+          2.167549997466267
+        ],
+        "batch64_reps": [
+          1.9354515624740998,
+          2.4948054687854437,
+          1.9334703125082342
+        ],
+        "batch1_ms_per_window_median": 2.535649999117595,
+        "batch64_ms_per_window_median": 1.9354515624740998
+      },
+      "onnx_int8_ort_dynamic": {
+        "batch1_reps": [
+          5.698599999959697,
+          5.721350000385428,
+          4.805099997611251
+        ],
+        "batch64_reps": [
+          4.096601562508795,
+          4.857628124995017,
+          4.583800000006022
+        ],
+        "batch1_ms_per_window_median": 5.698599999959697,
+        "batch64_ms_per_window_median": 4.583800000006022
+      },
+      "entropy_all": {
+        "batch1_reps": [
+          6.444149999879301,
+          5.038299999796436,
+          5.713200000172947
+        ],
+        "batch64_reps": [
+          4.149468750028973,
+          3.437125000004926,
+          4.410960937491382
+        ],
+        "batch1_ms_per_window_median": 5.713200000172947,
+        "batch64_ms_per_window_median": 4.149468750028973
+      },
+      "entropy_conv": {
+        "batch1_reps": [
+          4.874750000453787,
+          5.169099998965976,
+          5.236699998931726
+        ],
+        "batch64_reps": [
+          3.010160156236452,
+          3.1175546875203963,
+          3.516850781238645
+        ],
+        "batch1_ms_per_window_median": 5.169099998965976,
+        "batch64_ms_per_window_median": 3.1175546875203963
+      },
+      "percentile_all": {
+        "batch1_reps": [
+          5.184749999898486,
+          5.2898499998264015,
+          5.916899999647285
+        ],
+        "batch64_reps": [
+          4.305105468745296,
+          4.460741406262514,
+          4.184502343747454
+        ],
+        "batch1_ms_per_window_median": 5.2898499998264015,
+        "batch64_ms_per_window_median": 4.305105468745296
+      },
+      "percentile_conv": {
+        "batch1_reps": [
+          4.916449999655015,
+          7.150899999032845,
+          5.284949998895172
+        ],
+        "batch64_reps": [
+          3.855813281262499,
+          4.688969531230214,
+          5.220103124997877
+        ],
+        "batch1_ms_per_window_median": 5.284949998895172,
+        "batch64_ms_per_window_median": 4.688969531230214
+      },
+      "minmax_all": {
+        "batch1_reps": [
+          6.463300000177696,
+          7.149449998905766,
+          5.3209000016067876
+        ],
+        "batch64_reps": [
+          3.9251343750095202,
+          4.033442187505898,
+          3.428199218745931
+        ],
+        "batch1_ms_per_window_median": 6.463300000177696,
+        "batch64_ms_per_window_median": 3.9251343750095202
+      },
+      "minmax_conv": {
+        "batch1_reps": [
+          5.9961499991914025,
+          5.236549999608542,
+          4.854399998293957
+        ],
+        "batch64_reps": [
+          4.368359375007458,
+          3.249617187492504,
+          3.0238906249735464
+        ],
+        "batch1_ms_per_window_median": 5.236549999608542,
+        "batch64_ms_per_window_median": 3.249617187492504
+      }
+    },
+    "accuracy_subset": {
+      "description": "seed-42 file-level 70/15/15 test split, corrupted windows excluded, seed-42 random subset (same as quantize_bench/eval_ort_accuracy)",
+      "subset_size": 10000
+    }
   }
 }

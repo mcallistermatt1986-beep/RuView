@@ -176,6 +176,63 @@ a model blocker). Parity vs torch on the stored fixture
 (`results/parity_fixture.npz`, batch 2, seed 42): **max abs diff 2.4e-7 —
 PASS** (< 1e-4). ORT-quantized int8 model: `results/retrained_int8_ort_dynamic.onnx`.
 
+### Static PTQ (calibrated) — follow-up
+
+Follow-up to the dynamic-int8 row above (2026-06-10, same box, onnxruntime
+1.26.0): ONNX Runtime **static** post-training quantization
+(`quantize_static`, QDQ format, per-channel int8 weights + int8 activations)
+of the same fp32 export, calibrated on **corruption-free TRAINING-split
+windows only** (seed-42 file-level split, same masks; 1,000 windows for
+MinMax, 512 for the histogram calibrators; never test windows). Scopes:
+"conv-only" (`op_types_to_quantize=["Conv"]` — the attention path exports as
+Einsum/Softmax, which ORT never quantizes anyway, so "all-ops" additionally
+quantizes the elementwise Mul/Sigmoid/Add/AveragePool glue). Accuracy on the
+identical 10k-window seed-42 corruption-free test subset; latency median of
+3 interleaved reps (fp32/dynamic re-benched in-session as references).
+Script: `static_ptq_bench.py`; raw: `results/edge_optimization.json`
+(`onnx_static_ptq`).
+
+| Variant | Disk size | Batch 1 (ms/win) | Batch 64 (ms/win) | PCK@20 | PCK@50 | MPJPE |
+|---|---|---|---|---|---|---|
+| ONNX fp32 (reference) | 8.97 MB | 2.5 | 1.9 | 96.68% | 99.15% | 0.00936 |
+| ORT dynamic int8 (baseline) | **2.44 MB** | 5.7 | 4.6 | 96.52% | 99.15% | 0.01108 |
+| static QDQ **Percentile(99.99) conv-only** | 2.53 MB | 5.3 | 4.7 | 96.61% | 99.16% | **0.01031** |
+| static QDQ MinMax conv-only | 2.53 MB | 5.2 | 3.3 | **96.63%** | 99.19% | 0.01084 |
+| static QDQ Entropy conv-only | 2.53 MB | 5.2 | 3.1 | 96.60% | 99.19% | 0.01078 |
+| static QDQ MinMax all-ops | 2.60 MB | 6.5 | 3.9 | 95.45% | 99.14% | 0.01486 |
+| static QDQ Entropy all-ops | 2.60 MB | 5.7 | 4.1 | 95.30% | 99.13% | 0.01510 |
+| static QDQ Percentile all-ops | 2.60 MB | 5.3 | 4.3 | 96.39% | 99.17% | 0.01218 |
+
+**Verdict: static PTQ (conv-only) is the new best int8 point on accuracy —
+but only modestly, and it does not fix int8's latency penalty.**
+
+- **Accuracy: beats dynamic.** All three conv-only calibrations land at
+  PCK@20 96.60–96.63% (vs dynamic 96.52%, fp32 96.68% — recovers ~⅔ of the
+  dynamic gap) and MPJPE 0.0103–0.0108 (vs dynamic 0.01108). Best MPJPE:
+  Percentile conv-only, +10% over fp32 instead of dynamic's +18%.
+- **Size: slightly worse.** 2.53 MB vs 2.44 MB (+3.6%) — QDQ nodes and
+  per-channel scales cost a little; BatchNorm stays fp32 in both (the 12 BNs
+  follow Slice/Einsum/Reshape, never Conv, so they cannot be folded).
+- **Latency: a wash vs dynamic, still ~2× slower than ONNX fp32 at batch 1.**
+  Batch-1 medians 5.2–5.3 vs dynamic 5.7 ms/win in-session — within this
+  box's ±20–40% noise. Batch 64 leans static (3.1–3.3 for MinMax/Entropy
+  conv-only vs 4.6), same caveat.
+- **All-ops QDQ is strictly worse**: up to −1.4 pt PCK@20 and +60% MPJPE for
+  zero size/latency benefit — int8 activations through the elementwise glue
+  around the attention blocks is where the damage is. Conv-only is the right
+  scope.
+- Negative result worth recording: **Entropy calibration is a no-op here** —
+  on an identical calibration set it selects full-range thresholds
+  bit-identical to MinMax (all 247 scales equal; verified on a 64-window
+  smoke set). Also, ORT 1.26's `CalibMaxIntermediateOutputs` raises a
+  spurious "No data is collected" when the batch count divides the chunk
+  size (worked around in the script).
+
+Deployment guidance: need speed → ONNX fp32 (3.2 ms b1). Need int8 weights
+for size → static QDQ conv-only (Percentile or MinMax,
+`results/retrained_int8_static_percentile_conv.onnx`), which strictly
+dominates dynamic int8 on accuracy at ~equal latency and +0.09 MB.
+
 ## Measurement (b): BLOCKED-ON-DATA (attempted 2026-06-10)
 
 The fine-tune-on-ESP32 measurement stopped at dataset characterization, per the
