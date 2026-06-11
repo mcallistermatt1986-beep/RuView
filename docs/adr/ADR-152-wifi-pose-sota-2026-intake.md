@@ -49,6 +49,7 @@ Adopt four changes, ordered by effort-vs-gain:
 2. **Fuse geometry embeddings into specialist training.** Where a specialist head consumes the (future, ADR-150) backbone embedding, concatenate a small learned embedding of `NodeGeometry` — the PerceptAlign mechanism, transplanted to our per-room banks. Statistical specialists (current) ignore it; LoRA heads (ADR-151 P6) consume it.
 3. **Adopt the two-checkerboard alignment for the camera-supervised path (ADR-079).** When MediaPipe supervision is used, calibrate camera↔WiFi into one shared 3D frame before regression (<5 min, two checkerboards, a few photos). This is the direct defense against F1 for our 92.9%-PCK@20 pipeline.
 4. **Evaluate on the PerceptAlign cross-domain dataset** (21 subjects / 7 layouts) as the MERIDIAN cross-layout benchmark — *gated on confirming its license and downloadability* (open question; repo per paper: github.com/Trymore-lab/PerceptAlign).
+   > **Gate resolved (2026-06-10, MEASURED by repo inspection):** repo exists, **MIT license**, dataset downloadable from HuggingFace (5 per-scene repos, raw CSI + separate vision keypoints; Intel 5300, 1TX×3RX×3 ant, 57 subcarriers — same order as ESP32 subcarrier counts; Scene3 ships 3 distinct layouts). Code present, no pretrained weights. Benchmark adoption unblocked; dataset-side license terms inherit HF dataset terms (not separately stated — check at download time).
 
 ### 2.2 Benchmark against WiFlow-STD (DY2434) — ACCEPTED
 
