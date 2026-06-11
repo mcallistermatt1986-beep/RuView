@@ -1,0 +1,29 @@
+[package]
+name = "ruview-gamma-clinic"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Clinical dashboard + persistent hash-chained RuVector store for the Adaptive Gamma platform (ADR-251). Read-only instrumentation over ruview-gamma: participant response maps, session trends, cohort clusters, acceptance verdicts with gated claims. Research tooling, not a medical device."
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "gamma-clinic"
+path = "src/main.rs"
+
+[dependencies]
+ruview-gamma = { version = "0.3.0", path = "../ruview-gamma" }
+
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+# raw_value: the hash chain covers the exact on-disk record bytes (re-serializing
+# floats is not byte-stable — serde_json's default float parse is fast/lossy).
+serde_json = { workspace = true, features = ["raw_value"] }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }
+tempfile = "3"
