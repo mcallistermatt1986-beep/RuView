@@ -283,7 +283,9 @@ mod tests {
         let cfg = WiFlowStdConfig::default();
         let mut model = WiFlowStdModel::new(&cfg, Device::Cpu).expect("build");
         let tmp = tempdir().expect("tempdir");
-        let path = tmp.path().join("wiflow_std.pt");
+        // safetensors, not .pt: this torch build's _save_parameters/_load_parameters
+        // .pt roundtrip is broken on Windows (GenericDict internal assert)
+        let path = tmp.path().join("wiflow_std.safetensors");
         model.save(&path).expect("save");
         model.load(&path).expect("load");
         let out = model.forward_inference(&random_csi(&cfg, 1));

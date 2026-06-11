@@ -582,11 +582,13 @@ fn kp_to_heatmap_tensor(
     let num_kp = kp_tensor.size()[1] as usize;
 
     // Convert to ndarray for generate_target_heatmaps.
-    let kp_vec: Vec<f32> = Vec::<f64>::from(kp_tensor.to_kind(Kind::Double).flatten(0, -1))
+    let kp_vec: Vec<f32> = Vec::<f64>::try_from(kp_tensor.to_kind(Kind::Double).flatten(0, -1))
+        .expect("kp tensor to vec")
         .iter()
         .map(|&x| x as f32)
         .collect();
-    let vis_vec: Vec<f32> = Vec::<f64>::from(vis_tensor.to_kind(Kind::Double).flatten(0, -1))
+    let vis_vec: Vec<f32> = Vec::<f64>::try_from(vis_tensor.to_kind(Kind::Double).flatten(0, -1))
+        .expect("vis tensor to vec")
         .iter()
         .map(|&x| x as f32)
         .collect();
@@ -622,8 +624,8 @@ fn heatmap_to_keypoints(heatmaps: &Tensor) -> Tensor {
     let arg = flat.argmax(-1, false);
 
     // Decompose linear index into (row, col).
-    let row = (&arg / w).to_kind(Kind::Float); // [B, 17]
-    let col = (&arg % w).to_kind(Kind::Float); // [B, 17]
+    let row = arg.divide_scalar_mode(w, "floor").to_kind(Kind::Float); // [B, 17]
+    let col = arg.remainder(w).to_kind(Kind::Float); // [B, 17]
 
     // Normalize to [0, 1]
     let x = col / (w - 1) as f64;
@@ -639,7 +641,8 @@ fn heatmap_to_keypoints(heatmaps: &Tensor) -> Tensor {
 fn extract_kp_ndarray(kp_tensor: &Tensor, batch_idx: usize) -> Array2<f32> {
     let num_kp = kp_tensor.size()[1] as usize;
     let row = kp_tensor.select(0, batch_idx as i64);
-    let data: Vec<f32> = Vec::<f64>::from(row.to_kind(Kind::Double).flatten(0, -1))
+    let data: Vec<f32> = Vec::<f64>::try_from(row.to_kind(Kind::Double).flatten(0, -1))
+        .expect("kp tensor to vec")
         .iter()
         .map(|&v| v as f32)
         .collect();
@@ -652,7 +655,8 @@ fn extract_kp_ndarray(kp_tensor: &Tensor, batch_idx: usize) -> Array2<f32> {
 fn extract_vis_ndarray(vis_tensor: &Tensor, batch_idx: usize) -> Array1<f32> {
     let num_kp = vis_tensor.size()[1] as usize;
     let row = vis_tensor.select(0, batch_idx as i64);
-    let data: Vec<f32> = Vec::<f64>::from(row.to_kind(Kind::Double))
+    let data: Vec<f32> = Vec::<f64>::try_from(row.to_kind(Kind::Double))
+        .expect("vis tensor to vec")
         .iter()
         .map(|&v| v as f32)
         .collect();
