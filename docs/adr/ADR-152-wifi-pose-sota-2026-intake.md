@@ -108,6 +108,7 @@ Pull the Apache-2.0 weights + 360k-sample dataset; run three measurements: (a) t
 ## 4. Open questions (carried from the research run)
 
 1. Does WiFlow-STD retain accuracy when fine-tuned on ESP32-S3/C6 CSI (fewer subcarriers, lower SNR), scored on our 17-keypoint set? (§2.2 answers this.)
+   > **Partial answer (MEASURED 2026-06-11, measurement (b) on 2,046 single-room windows — `benchmarks/wiflow-std/RESULTS.md`):** pretrained init shows strong *optimization* transfer (65% PCK@20 vs scratch's 0% collapse under the same budget) but **no feature transfer** (frozen-trunk + linear adapter ≈ 0%). And no run beat the mean-pose baseline (95.9% PCK@20 — single subject, near-static normalized coords), so no CSI→pose capability is citable from this data. A definitive answer needs multi-subject/multi-position data where the mean pose is weak.
 2. Is the PerceptAlign dataset downloadable under a usable license, and does the two-checkerboard procedure work with ESP32 transceiver geometry? (§2.1.4 gate.)
 3. Will esp_wifi_sensing evolve toward 802.11bf compliance, replacing opportunistic CSI extraction?
 

@@ -264,9 +264,117 @@ same split. WiFlow-STD assets stand ready on ruvultra (`~/wiflow-std-bench/`).
 Also worth investigating: ADR-079's protocol predicts ~9k windows per 30 min;
 the May session under-delivered ~8× (aligner drop rate?).
 
+## Measurement (b) (MEASURED 2026-06-10/11)
+
+The data baseline unblocked: the 2026-06-10 22:10–22:40 collection session produced
+**2,046 paired windows** (`ruvultra:~/wiflow-std-bench/paired-20260610.jsonl`; ONE
+subject, ONE room, ONE ESP32 node, varied poses: walk/raise/squat/kick/wave/turn/
+jump/sit; aligner `scripts/align-ground-truth.js`, non-overlapping 20-frame windows
+~0.42 s; 17 COCO keypoints in normalized [0,1] camera coords; MediaPipe confidence
+mean 0.802, min 0.692 — all windows pass the conf>0.5 filter). The −4 h timestamp
+bug and the empty-frame confidence-dilution aligner findings are recorded
+separately; results only here. Trained on ruvultra (RTX 5080, torch 2.11+cu128,
+fp32, batch 32, GPU shared with the efficiency sweep). Scripts mirrored in
+`remote/measb/`; raw metrics + full training curves in `results/measurement_b.json`.
+
+### Two new aligner/dataset findings (forced deviations, MEASURED)
+
+1. **`csi_shape` is heterogeneous, not [70, 20]**: 1,347× [70,20], 284× [134,20],
+   243× [26,20], 130× [12,20], 42× [20,20]. The ESP32 stream emits mixed frame
+   types and `extractCsiMatrix` stamps each window's subcarrier count from
+   `window[0].subcarriers`, zero-padding/truncating the other frames — even
+   native-70 windows contain ~20.4% internally zero-padded short frames
+   (subcarriers 40–69 all-zero). Handling: the primary suite ("all 2,046")
+   linearly resamples every frame's subcarrier axis to 70 bins (identity for
+   native-70 frames) so the pre-registered n and split sizes hold; a secondary
+   suite restricts to the 1,347 native [70,20] windows as a homogeneity check.
+2. **Aligner layout bug**: `extractCsiMatrix` fills `matrix[f * nSc + s]`
+   (frame-major) but declares `shape: [nSc, nFrames]` — the stored shape label is
+   transposed relative to the data. Confirmed by coherent per-frame zero-tails;
+   corrected on load (`reshape(nFrames, nSc).T`).
+
+### Protocol (pre-registered, followed)
+
+Temporal split, no shuffling across time: first 70% train (1,432), next 15% val
+(307), last 15% test (307); seed 42 elsewhere. Model: learned 1×1 Conv1d 70→540
+adapter prepended to the upstream WiFlow-STD trunk; K=17 via the parameter-free
+adaptive pool (`AdaptiveAvgPool2d((17,1))` — pretrained weights load strict for
+any K). CSI normalized by the TRAIN-split p99 amplitude (129.7 all / 130.9
+native-70), clipped to [0,1]. Three runs, ≤60 epochs, early-stop patience 8 on
+val MPJPE, AdamW (adapter lr 1e-4; pretrained trunk lr 1e-5, 10× lower; scratch
+all 1e-4), fp32. Pretrained init = the measurement-(a) **retrained** checkpoint
+(`upstream/test/best_pose_model.pth`, ~96% PCK@20 on WiFlow data; the
+`att.`/`final_conv.` key remap from `eval_repro.py` applied defensively — a no-op,
+that checkpoint already uses post-rename keys). Frozen-trunk run: trunk
+`requires_grad=False` **and** held in `.eval()` so BatchNorm running stats cannot
+drift — a pure transfer probe; only the 70→540 adapter (38,340 params) trains.
+
+PCK is torso-normalized with **torso = ‖l_shoulder(5) − l_hip(11)‖** (upstream
+`calculate_pck` math — per-frame norm clamped at 0.01, mean over keypoints ×
+frames — but upstream's `NECK_IDX/PELVIS_IDX = 2, 12` is a 15-keypoint
+convention; on 17-kp COCO those indices are right_eye/right_hip, so the indices
+were replaced, not the math). MPJPE is in normalized image units (not meters).
+
+### Results — primary suite, all 2,046 windows (test = last 307)
+
+| Run | PCK@10 | PCK@20 | PCK@30 | PCK@40 | PCK@50 | MPJPE | pred std | best ep |
+|---|---|---|---|---|---|---|---|---|
+| **mean-pose baseline** (honesty bar) | **73.1%** | **95.9%** | **98.7%** | 99.3% | 99.3% | **0.0148** | 0 (by constr.) | — |
+| (i) pretrained-init, full fine-tune | 26.0% | 65.0% | 88.0% | 96.4% | 98.9% | 0.0313 | 0.0113 | 58/60 |
+| (ii) scratch | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.2554 | 0.0002 | 4 (stop @13) |
+| (iii) frozen-trunk (adapter only) | 0.0% | 0.0% | 0.2% | 3.2% | 14.4% | 0.1260 | 0.0073 | 59/60 |
+
+Secondary suite (native [70,20] windows only, n=1,347, test=202) reproduces the
+same ordering: mean-baseline 96.0% / pretrained 67.1% / scratch 0.0% /
+frozen-trunk 0.0% PCK@20 (MPJPE 0.0153 / 0.0318 / 0.2236 / 0.1343) — the
+subcarrier-resampling choice does not change any conclusion.
+
+### Interpretation
+
+- **Did pretraining-transfer happen? Partially — as optimization transfer, not
+  feature transfer, and not past the honesty bar.**
+  - *Pretrained vs scratch*: dramatic (65.0% vs 0.0% PCK@20). The pretrained init
+    is the only configuration that trains at all under the pre-registered budget.
+  - *Frozen-trunk*: near-zero (0.0% PCK@20, 14.4% @50). WiFlow-STD's frozen
+    features do **not** transfer to our ESP32 domain through a linear subcarrier
+    adapter — the pretrained benefit is a well-conditioned initialization (incl.
+    calibrated BN/output scales), not reusable CSI→pose features.
+  - *Everything vs mean-pose baseline*: **no run beats it.** A constant
+    train-mean pose scores 95.9% torso-PCK@20 / 0.0148 MPJPE on this test split,
+    because a single subject in one camera frame barely moves in normalized
+    coordinates. The fine-tuned model is a real, non-constant model
+    (pred std 0.0113 > 0 — passes the constant-pose detector that retracted the
+    old 92.9% figure) but its deviations from the mean hurt: it fits train-period
+    temporal dynamics that do not generalize across the temporal split.
+- **Verdict for ADR-152 §2.2(b): fine-tuning WiFlow-STD on this dataset does not
+  demonstrate CSI→pose signal beyond the mean pose.** Until a model beats the
+  mean-pose baseline on a temporal split, no PCK number from this line may be
+  cited as pose-estimation capability.
+
+### Caveats (honest, pre-registered)
+
+- Single subject, single room, single session (30 min), single ESP32 node —
+  in-domain temporal split only; nothing here speaks to cross-room or
+  cross-subject generalization.
+- 2k windows vs the 360k-window WiFlow-STD corpus — **NOT comparable** to the
+  ~96% in-domain measurement-(a) number, and the published 97.25% even less so.
+- The scratch run's total collapse (it cannot even reach the mean pose; its
+  output BatchNorm/SiLU head must learn output scale from random init at lr 1e-4)
+  is an optimization outcome under the fixed budget, not proof the architecture
+  cannot learn from scratch — the pretrained-vs-scratch gap partially reflects
+  this conditioning advantage.
+- Mixed-subcarrier frames (finding 1) mean even the "clean" windows carry ~20%
+  zero-padded frames; collection-side frame-type filtering should precede the
+  next session.
+- Mean-baseline PCK is inflated by low pose variance relative to torso size
+  (~0.2–0.3 image units); PCK@10 (73.1%) shows the same ceiling effect at a
+  stricter threshold — the bar is the bar, but a livelier dataset would lower it.
+
 ## Pending
 
-- (b) fine-tune on our ESP32 17-keypoint eval set — **BLOCKED-ON-DATA**, see above.
+- (b) fine-tune on our ESP32 17-keypoint eval set — **MEASURED 2026-06-10/11**,
+  see above: no run beats the mean-pose baseline; pretraining transfers as
+  optimization aid only.
 - (c) our internal WiFlow on their dataset (15-keypoint subset mapping) — also
   affected: there is currently no validated internal pose model to compare
   (the 92.9% artifact is retracted; the MM-Fi SOTA models in ADR-150 §3 are a
