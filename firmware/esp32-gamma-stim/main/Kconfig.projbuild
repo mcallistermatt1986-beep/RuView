@@ -25,9 +25,24 @@ config GAMMA_STIM_ESTOP_GPIO
     int "Emergency-stop button GPIO (active low)"
     default 7
     help
-        Button to GND. Falling edge latches an emergency stop: outputs off in
-        the ISR, sessions refused until UNLOCK. Stop latency target <100 ms;
-        the ISR path achieves microseconds.
+        Button to GND. Falling edge latches an emergency stop: the output
+        gate GPIO is driven low in the ISR (direct register write), sessions
+        refused until UNLOCK. UNLOCK is refused while the button is still
+        held. Stop latency target <100 ms; the gate write achieves
+        microseconds.
+
+config GAMMA_STIM_GATE_GPIO
+    int "Output-enable gate GPIO (hard off path)"
+    default 10
+    help
+        Plain GPIO that enables BOTH the LED driver and the audio amplifier
+        (hardware AND with the LEDC carriers). The half-period ISR toggles it
+        to deliver the 36-44 Hz envelope, and the e-stop ISR / dead-man
+        watchdog force it low with a direct register write — the <100 ms
+        stop guarantee rests on this pin, NOT on the LEDC driver. Wire it to
+        the driver/amplifier enable inputs with an external pulldown so the
+        outputs stay disabled while the pin floats during boot/reset. Avoid
+        strapping pins (e.g. GPIO8/GPIO9 on ESP32-C6).
 
 config GAMMA_STIM_AUDIO_TONE_HZ
     int "Audio tone carrier frequency (Hz)"

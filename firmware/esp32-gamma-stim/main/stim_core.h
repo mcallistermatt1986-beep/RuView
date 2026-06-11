@@ -34,8 +34,10 @@ typedef struct {
     uint32_t max_duration_s;    /* 900 = 15 min */
 } stim_envelope_t;
 
-/* The compiled-in conservative envelope (ADR-250 §5). Kconfig may narrow it,
- * never widen it (enforced by range limits in Kconfig.projbuild). */
+/* The compiled-in conservative envelope (ADR-250 §5). The values are
+ * hard-coded in stim_core.c — there are deliberately NO Kconfig options for
+ * them: widening the envelope requires editing the host-tested core and its
+ * unit tests, never a build-time switch. */
 stim_envelope_t stim_envelope_conservative(void);
 
 /* ---- Session state machine ---------------------------------------------- */
